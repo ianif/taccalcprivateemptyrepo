@@ -2,10 +2,8 @@
 """
 A simple Python script that writes 'Hello' to a text file.
 
-Author: DEMO
+Author: DEMO, IOANNA
 """
-
-__author__ = "IOANNA"
 
 def write_hello_to_file(filename="output.txt", message="Hello"):
     """
