@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "greek-tax-calculator"
+version = "1.0.0"
+description = "A comprehensive command-line tool for calculating taxes, social security contributions, and VAT obligations for freelancers operating in Greece"
+authors = [
+    {name = "Tax Calculator Team"}
+]
+readme = "README.md"
+requires-python = ">=3.6"
+license = {text = "MIT"}
+keywords = ["tax", "calculator", "greece", "freelancer", "vat", "efka"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Office/Business :: Financial :: Accounting",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+[project.scripts]
+greek-tax-calculator = "main:run_calculator"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.pytest.ini_options]
+# Pytest configuration for Greek Tax Calculator
+# Test discovery patterns
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+# Test markers for organizing tests
+markers = [
+    "unit: Unit tests for individual functions and components",
+    "integration: Integration tests for end-to-end workflows and component interactions"
+]
+
+# Coverage configuration
+addopts = [
+    "--verbose",
+    "--strict-markers",
+    "--cov=.",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=80"
+]
+
+# Minimum coverage threshold: 80%
+# Note: This will cause test runs to fail if coverage drops below 80%
+
+# Test output configuration
+console_output_style = "progress"
+minversion = "7.0"
+
+[tool.logging]
+# Logging configuration for Greek Tax Calculator
+# These are default settings - can be overridden via CLI arguments
+
+# Default log file location
+log_file = "tax_calculator_debug.log"
+
+# Default console log level (INFO)
+# Can be overridden with --verbose (DEBUG) or --quiet (WARNING)
+console_level = "INFO"
+
+# File log level (always DEBUG for comprehensive debugging)
+file_level = "DEBUG"
+
+# Log format for both console and file
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Date format
+date_format = "%Y-%m-%d %H:%M:%S"
+
+# Privacy settings
+# Note: Sensitive financial data should only be logged at DEBUG level
+# This ensures that users running in quiet mode don't leak data in logs
+privacy_mode = true  # When true, financial amounts only logged at DEBUG level

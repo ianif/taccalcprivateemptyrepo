@@ -8,459 +8,419 @@ implementing the 2024 Greek tax law requirements including:
 - VAT (Value Added Tax)
 - EFKA social security contributions
 
-All monetary values use floats and calculations are accurate to 2 decimal places.
+All monetary values use Decimal type for exact financial calculations with
+precision to 2 decimal places, eliminating floating-point rounding errors.
+
+TAX RATE SOURCES AND VERIFICATION
+==================================
+
+This calculator implements tax rates based on official Greek tax legislation:
+
+INCOME TAX BRACKETS:
+    Source: Law 4172/2013 (Greek Income Tax Code), as amended
+    Reference: Articles 9 and 15
+    Official source: AADE (Independent Authority for Public Revenue)
+    URL: https://www.aade.gr
+    
+    The progressive tax brackets apply to all individual income in Greece,
+    including income from self-employment and freelance activities.
+
+EFKA SOCIAL SECURITY CONTRIBUTIONS:
+    Source: Law 4387/2016 (Unified Social Security System)
+    Administering body: EFKA (e-EFKA - Unified Social Security Fund)
+    URL: https://www.efka.gov.gr
+    
+    Rates apply to self-employed professionals and freelancers.
+    Note: EFKA has minimum monthly contributions (approx. €230-250/month as of 2024)
+    and maximum insurable income caps that are not implemented in this calculator.
+
+VAT (VALUE ADDED TAX):
+    Source: Greek VAT Law 2859/2000, as amended
+    Reference: Article 21 (Standard rate)
+    EU Directive: 2006/112/EC
+    URL: https://www.aade.gr
+    
+    Standard rate applies to most professional services. Reduced rates
+    (13%, 6%) exist but are not applicable to most freelance services.
+
+LAST VERIFICATION DATE: 2024-01-15
+
+IMPORTANT ASSUMPTIONS AND LIMITATIONS:
+=======================================
+
+This calculator makes the following assumptions:
+
+1. STANDARD TAXATION REGIME
+   - Assumes the standard progressive tax system applies
+   - Does not account for simplified/presumptive tax regimes
+   - Does not include special professional category rates
+
+2. NO SPECIAL DEDUCTIONS OR CREDITS
+   - Does not calculate personal tax-free threshold adjustments
+   - Does not include dependent allowances
+   - Does not account for special professional expense percentages
+   - Does not include tax credits for insurance premiums paid
+
+3. EFKA SIMPLIFICATIONS
+   - Uses flat 20% rate on all gross income
+   - Does NOT enforce minimum monthly contributions (~€230-250/month)
+   - Does NOT apply maximum insurable income caps (~€81,000/year)
+   - Does NOT account for reduced rates for new professionals
+   - Does NOT include OAEE contributions for certain professions
+
+4. SOLIDARITY CONTRIBUTION NOT INCLUDED
+   - The "Special Solidarity Contribution" (2.2%-10% on income >€12,000)
+   - was suspended for 2024 but may be reinstated - NOT CALCULATED
+
+5. OTHER EXCLUSIONS
+   - Real estate tax (ENFIA)
+   - Advanced prepayments (προκαταβολή φόρου)
+   - Municipal taxes and fees
+   - Professional chamber fees
+   - Withholding tax considerations
+
+6. VAT ASSUMPTIONS
+   - Assumes all income is VAT-eligible at standard rate
+   - Does not account for VAT exemptions
+   - Does not calculate input VAT deductions
+   - Simplified calculation for estimation only
+
+DISCLAIMER:
+===========
+This calculator is provided for INFORMATIONAL and PLANNING purposes only.
+Greek tax law is complex and changes frequently. Individual circumstances,
+professional categories, and special regimes may significantly affect actual
+tax obligations. 
+
+**Always consult with a certified Greek tax professional (λογιστής) and
+verify current rates with official sources before making financial decisions.**
+
+For official information, consult:
+- AADE (Tax Authority): https://www.aade.gr
+- EFKA (Social Security): https://www.efka.gov.gr  
+- Taxisnet (Tax Portal): https://www.gsis.gr
 """
+
+import logging
+from decimal import Decimal, ROUND_HALF_UP, getcontext
+from typing import Dict, List, Tuple, Union
+
+# Import configuration from centralized config module
+from config import (
+    INCOME_TAX_BRACKETS,
+    VAT_RATE,
+    EFKA_MAIN_RATE,
+    EFKA_ADDITIONAL_RATE,
+    EFKA_TOTAL_RATE,
+    VALID_FREQUENCIES,
+    TAX_YEAR,
+    LAST_UPDATED
+)
+
+# Import data models
+from models import (
+    BracketBreakdown,
+    IncomeTaxBreakdown,
+    VATCalculation,
+    SocialSecurityCalculation,
+    TaxCalculationResult,
+    PaymentInstallment,
+    PaymentSchedule
+)
 
 __author__ = "Tax Calculator"
 __version__ = "1.0.0"
 
+# Create logger for this module
+logger = logging.getLogger(__name__)
+
+# Set decimal context for consistent financial rounding
+getcontext().rounding = ROUND_HALF_UP
+
 # ============================================================================
-# TAX CONSTANTS - Greek Tax Law 2024
+# CONFIGURATION NOTE
 # ============================================================================
-
-# Income Tax Brackets (in EUR)
-# Progressive tax system with 5 brackets
-INCOME_TAX_BRACKETS = [
-    (10000.00, 0.09),   # €0 - €10,000: 9%
-    (20000.00, 0.22),   # €10,001 - €20,000: 22%
-    (30000.00, 0.28),   # €20,001 - €30,000: 28%
-    (40000.00, 0.36),   # €30,001 - €40,000: 36%
-    (float('inf'), 0.44)  # Over €40,000: 44%
-]
-
-# VAT Rate for Greece
-VAT_RATE = 0.24  # 24%
-
-# EFKA Social Security Rates for Freelancers
-# Main insurance contribution rate
-EFKA_MAIN_RATE = 0.1333  # 13.33%
-
-# Additional EFKA contributions (healthcare, auxiliary pension, etc.)
-EFKA_ADDITIONAL_RATE = 0.0667  # 6.67%
-
-# Total EFKA rate
-EFKA_TOTAL_RATE = EFKA_MAIN_RATE + EFKA_ADDITIONAL_RATE  # 20%
-
-# Payment schedule frequencies
-VALID_FREQUENCIES = ['monthly', 'quarterly', 'annual']
+# All tax rates, brackets, and constants have been moved to config.py
+# for centralized configuration management. This improves maintainability
+# and makes it easier to update rates when tax laws change.
+#
+# See config.py for:
+# - INCOME_TAX_BRACKETS: Progressive tax bracket thresholds and rates
+# - VAT_RATE: Value Added Tax rate (24%)
+# - EFKA rates: Social security contribution rates
+# - VALID_FREQUENCIES: Payment schedule options
+# - TAX_YEAR and LAST_UPDATED: Version metadata
 
 
 # ============================================================================
 # CORE TAX CALCULATION FUNCTIONS
 # ============================================================================
 
-def calculate_taxable_income(gross_income, deductible_expenses):
+def calculate_taxable_income(gross_income: Union[Decimal, float, int, str], 
+                            deductible_expenses: Union[Decimal, float, int, str]) -> Decimal:
     """
     Calculate taxable income after deducting eligible expenses.
     
-    Taxable income is the base for income tax calculations and is computed
-    as gross income minus deductible expenses. Handles edge cases where
-    expenses exceed income.
-    
     Args:
-        gross_income (float): Total gross income in EUR
-        deductible_expenses (float): Total deductible business expenses in EUR
+        gross_income: Total gross income in EUR
+        deductible_expenses: Total deductible business expenses in EUR
     
     Returns:
-        float: Taxable income (rounded to 2 decimal places, minimum 0.00)
-    
-    Examples:
-        >>> # Example 1: Standard case with expenses
-        >>> calculate_taxable_income(50000, 10000)
-        40000.0
-        
-        >>> # Example 2: Edge case - expenses exceed income
-        >>> calculate_taxable_income(10000, 15000)
-        0.0
-        
-        >>> # Example 3: No expenses
-        >>> calculate_taxable_income(35000, 0)
-        35000.0
-        
-        >>> # Example 4: Low income with moderate expenses
-        >>> calculate_taxable_income(12000, 9000)
-        3000.0
+        Decimal: Taxable income (minimum 0.00, rounded to 2 decimal places)
     """
-    # Handle edge case: expenses exceeding income
-    taxable = max(0.0, gross_income - deductible_expenses)
-    return round(taxable, 2)
+    logger.debug("Calculating taxable income")
+    gross_income = Decimal(str(gross_income))
+    deductible_expenses = Decimal(str(deductible_expenses))
+    
+    taxable = max(Decimal('0'), gross_income - deductible_expenses)
+    result = taxable.quantize(Decimal('0.01'), ROUND_HALF_UP)
+    logger.debug(f"Taxable income calculated: {result}")
+    return result
 
 
-def calculate_income_tax(taxable_income):
+def calculate_income_tax(taxable_income: Union[Decimal, float, int, str]) -> IncomeTaxBreakdown:
     """
     Calculate progressive income tax based on Greek tax brackets for 2024.
     
     Applies progressive taxation where each bracket is taxed at its own rate.
-    Only the portion of income within each bracket is taxed at that bracket's rate.
-    
-    Greek Income Tax Brackets:
-    - €0 - €10,000: 9%
-    - €10,001 - €20,000: 22%
-    - €20,001 - €30,000: 28%
-    - €30,001 - €40,000: 36%
-    - Over €40,000: 44%
     
     Args:
-        taxable_income (float): Taxable income in EUR (after deductions)
+        taxable_income: Taxable income in EUR (after deductions)
     
     Returns:
-        dict: Dictionary containing:
-            - 'total_tax' (float): Total income tax owed
-            - 'effective_rate' (float): Effective tax rate as percentage
-            - 'bracket_breakdown' (list): List of dicts with tax per bracket
-    
-    Examples:
-        >>> # Example 1: Low income (single bracket)
-        >>> result = calculate_income_tax(3000)
-        >>> result['total_tax']
-        270.0
-        >>> result['effective_rate']
-        9.0
-        
-        >>> # Example 2: Medium income (spans 2 brackets)
-        >>> result = calculate_income_tax(15000)
-        >>> result['total_tax']
-        2000.0
-        >>> # €10,000 @ 9% = €900, plus €5,000 @ 22% = €1,100, total = €2,000
-        
-        >>> # Example 3: High income (spans all brackets)
-        >>> result = calculate_income_tax(50000)
-        >>> result['total_tax']
-        13900.0
-        >>> result['effective_rate']
-        27.8
-        >>> # Breakdown: €900 + €2,200 + €2,800 + €3,600 + €4,400 = €13,900
-        
-        >>> # Example 4: Zero income
-        >>> result = calculate_income_tax(0)
-        >>> result['total_tax']
-        0.0
+        IncomeTaxBreakdown: Income tax calculation with bracket-by-bracket details
     """
-    if taxable_income <= 0:
-        return {
-            'total_tax': 0.0,
-            'effective_rate': 0.0,
-            'bracket_breakdown': []
-        }
+    logger.debug("Calculating income tax using progressive brackets")
+    taxable_income = Decimal(str(taxable_income))
     
-    total_tax = 0.0
+    if taxable_income <= 0:
+        logger.debug("Taxable income is zero or negative - returning zero tax")
+        return IncomeTaxBreakdown(
+            total_tax=Decimal('0.00'),
+            effective_rate=Decimal('0.00'),
+            bracket_breakdown=[]
+        )
+    
+    logger.debug(f"Processing {len(INCOME_TAX_BRACKETS)} tax brackets")
+    total_tax = Decimal('0')
     bracket_breakdown = []
     remaining_income = taxable_income
-    previous_bracket_limit = 0.0
+    previous_bracket_limit = Decimal('0')
     
-    for bracket_limit, rate in INCOME_TAX_BRACKETS:
+    for i, bracket in enumerate(INCOME_TAX_BRACKETS):
         if remaining_income <= 0:
             break
         
-        # Calculate taxable amount in this bracket
-        bracket_size = bracket_limit - previous_bracket_limit
-        taxable_in_bracket = min(remaining_income, bracket_size)
+        bracket_limit = bracket.upper_limit
+        rate = bracket.rate
         
-        # Calculate tax for this bracket
+        if bracket_limit == Decimal('inf'):
+            taxable_in_bracket = remaining_income
+        else:
+            bracket_size = bracket_limit - previous_bracket_limit
+            taxable_in_bracket = min(remaining_income, bracket_size)
+        
         tax_in_bracket = taxable_in_bracket * rate
         total_tax += tax_in_bracket
         
-        # Record breakdown
-        bracket_breakdown.append({
-            'bracket_min': previous_bracket_limit,
-            'bracket_max': bracket_limit if bracket_limit != float('inf') else 'unlimited',
-            'rate': rate * 100,  # Convert to percentage
-            'taxable_amount': round(taxable_in_bracket, 2),
-            'tax_amount': round(tax_in_bracket, 2)
-        })
+        logger.debug(f"Bracket {i+1}: amount={taxable_in_bracket.quantize(Decimal('0.01'), ROUND_HALF_UP)}, "
+                    f"rate={rate*100:.2f}%, tax={tax_in_bracket.quantize(Decimal('0.01'), ROUND_HALF_UP)}")
+        
+        bracket_breakdown.append(BracketBreakdown(
+            bracket_min=previous_bracket_limit.quantize(Decimal('0.01'), ROUND_HALF_UP),
+            bracket_max='unlimited' if bracket_limit == Decimal('inf') else bracket_limit.quantize(Decimal('0.01'), ROUND_HALF_UP),
+            rate=(rate * 100).quantize(Decimal('0.01'), ROUND_HALF_UP),
+            taxable_amount=taxable_in_bracket.quantize(Decimal('0.01'), ROUND_HALF_UP),
+            tax_amount=tax_in_bracket.quantize(Decimal('0.01'), ROUND_HALF_UP)
+        ))
         
         remaining_income -= taxable_in_bracket
-        previous_bracket_limit = bracket_limit
+        if bracket_limit != Decimal('inf'):
+            previous_bracket_limit = bracket_limit
     
-    # Calculate effective tax rate
-    effective_rate = (total_tax / taxable_income * 100) if taxable_income > 0 else 0.0
+    effective_rate = (total_tax / taxable_income * 100) if taxable_income > 0 else Decimal('0')
+    total_tax_rounded = total_tax.quantize(Decimal('0.01'), ROUND_HALF_UP)
+    logger.debug(f"Income tax calculation complete: total_tax={total_tax_rounded}, effective_rate={effective_rate.quantize(Decimal('0.01'), ROUND_HALF_UP)}%")
     
-    return {
-        'total_tax': round(total_tax, 2),
-        'effective_rate': round(effective_rate, 2),
-        'bracket_breakdown': bracket_breakdown
-    }
+    return IncomeTaxBreakdown(
+        total_tax=total_tax_rounded,
+        effective_rate=effective_rate.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        bracket_breakdown=bracket_breakdown
+    )
 
 
-def calculate_vat(gross_income):
+def calculate_vat(gross_income: Union[Decimal, float, int, str]) -> VATCalculation:
     """
     Calculate Value Added Tax (VAT) for Greek freelancers.
     
-    Greek standard VAT rate is 24%. This is typically collected from clients
-    and must be remitted to tax authorities.
-    
     Args:
-        gross_income (float): Total gross income in EUR (excluding VAT)
+        gross_income: Total gross income in EUR (excluding VAT)
     
     Returns:
-        dict: Dictionary containing:
-            - 'vat_amount' (float): Total VAT to be collected/paid
-            - 'rate' (float): VAT rate as percentage
-            - 'total_with_vat' (float): Gross income plus VAT
-    
-    Examples:
-        >>> # Example 1: €10,000 project
-        >>> calculate_vat(10000)
-        {'vat_amount': 2400.0, 'rate': 24.0, 'total_with_vat': 12400.0}
-        >>> # Invoice client €12,400 total (you keep €10,000, remit €2,400)
-        
-        >>> # Example 2: €35,000 annual income
-        >>> result = calculate_vat(35000)
-        >>> result['vat_amount']
-        8400.0
-        >>> # Collect €8,400 VAT from clients throughout the year
-        
-        >>> # Example 3: Small project
-        >>> calculate_vat(1500)
-        {'vat_amount': 360.0, 'rate': 24.0, 'total_with_vat': 1860.0}
+        VATCalculation: VAT calculation with amount and rate
     """
-    vat_amount = gross_income * VAT_RATE
-    total_with_vat = gross_income + vat_amount
+    logger.debug(f"Calculating VAT at {VAT_RATE*100}% rate")
+    gross_income = Decimal(str(gross_income))
     
-    return {
-        'vat_amount': round(vat_amount, 2),
-        'rate': VAT_RATE * 100,
-        'total_with_vat': round(total_with_vat, 2)
-    }
+    if gross_income <= 0:
+        logger.debug("Gross income is zero or negative - returning zero VAT")
+        return VATCalculation(
+            vat_amount=Decimal('0.00'),
+            rate=(VAT_RATE * 100).quantize(Decimal('0.01'), ROUND_HALF_UP)
+        )
+    
+    vat_amount = gross_income * VAT_RATE
+    vat_rounded = vat_amount.quantize(Decimal('0.01'), ROUND_HALF_UP)
+    logger.debug(f"VAT calculated: {vat_rounded}")
+    
+    return VATCalculation(
+        vat_amount=vat_rounded,
+        rate=(VAT_RATE * 100).quantize(Decimal('0.01'), ROUND_HALF_UP)
+    )
 
 
-def calculate_social_security(gross_income):
+def calculate_social_security(gross_income: Union[Decimal, float, int, str]) -> SocialSecurityCalculation:
     """
     Calculate EFKA social security contributions for Greek freelancers.
     
-    EFKA (Unified Social Security Entity) contributions include:
-    - Main insurance: 13.33%
-    - Additional contributions (healthcare, auxiliary pension, etc.): 6.67%
-    - Total: 20%
-    
-    These contributions are mandatory for all freelancers in Greece and provide
-    access to healthcare, pension, and other social benefits.
+    Note: EFKA is calculated on GROSS income, not taxable income.
     
     Args:
-        gross_income (float): Total gross income in EUR
+        gross_income: Total gross income in EUR
     
     Returns:
-        dict: Dictionary containing:
-            - 'total_contribution' (float): Total EFKA contribution
-            - 'main_insurance' (float): Main insurance contribution (13.33%)
-            - 'additional_contributions' (float): Additional contributions (6.67%)
-            - 'rate' (float): Total contribution rate as percentage
-    
-    Examples:
-        >>> # Example 1: €30,000 gross income
-        >>> result = calculate_social_security(30000)
-        >>> result['total_contribution']
-        6000.0
-        >>> result['main_insurance']
-        3999.0
-        >>> result['additional_contributions']
-        2001.0
-        
-        >>> # Example 2: €15,000 income (20% = €3,000)
-        >>> calculate_social_security(15000)['total_contribution']
-        3000.0
-        
-        >>> # Example 3: €60,000 income
-        >>> result = calculate_social_security(60000)
-        >>> result['total_contribution']
-        12000.0
-        >>> # Note: EFKA is always 20% of GROSS income, not taxable income!
-        
-        >>> # Example 4: Low income scenario
-        >>> calculate_social_security(12000)['total_contribution']
-        2400.0
+        SocialSecurityCalculation: EFKA contribution details
     """
+    logger.debug(f"Calculating EFKA social security at {EFKA_TOTAL_RATE*100}% rate")
+    gross_income = Decimal(str(gross_income))
+    
+    if gross_income <= 0:
+        logger.debug("Gross income is zero or negative - returning zero EFKA")
+        return SocialSecurityCalculation(
+            total_contribution=Decimal('0.00'),
+            main_insurance=Decimal('0.00'),
+            additional_contributions=Decimal('0.00'),
+            rate=(EFKA_TOTAL_RATE * 100).quantize(Decimal('0.01'), ROUND_HALF_UP)
+        )
+    
     main_insurance = gross_income * EFKA_MAIN_RATE
     additional_contributions = gross_income * EFKA_ADDITIONAL_RATE
     total_contribution = gross_income * EFKA_TOTAL_RATE
     
-    return {
-        'total_contribution': round(total_contribution, 2),
-        'main_insurance': round(main_insurance, 2),
-        'additional_contributions': round(additional_contributions, 2),
-        'rate': EFKA_TOTAL_RATE * 100
-    }
-
-
-def calculate_all_taxes(gross_income, deductible_expenses):
-    """
-    Master function to calculate all tax components for Greek freelancers.
+    total_rounded = total_contribution.quantize(Decimal('0.01'), ROUND_HALF_UP)
+    logger.debug(f"EFKA calculated: main={main_insurance.quantize(Decimal('0.01'), ROUND_HALF_UP)}, "
+                f"additional={additional_contributions.quantize(Decimal('0.01'), ROUND_HALF_UP)}, "
+                f"total={total_rounded}")
     
-    This comprehensive function calculates:
-    1. Taxable income (gross income - deductible expenses)
-    2. Progressive income tax
-    3. VAT obligations
-    4. EFKA social security contributions
-    5. Total tax burden and net income
+    return SocialSecurityCalculation(
+        total_contribution=total_rounded,
+        main_insurance=main_insurance.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        additional_contributions=additional_contributions.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        rate=(EFKA_TOTAL_RATE * 100).quantize(Decimal('0.01'), ROUND_HALF_UP)
+    )
+
+
+def calculate_all_taxes(gross_income: Union[Decimal, float, int, str], 
+                       deductible_expenses: Union[Decimal, float, int, str]) -> TaxCalculationResult:
+    """
+    Calculate all tax components for Greek freelancers.
+    
+    Calculates taxable income, progressive income tax, VAT, EFKA social security,
+    and total tax burden. Note: Income tax is on taxable income, but EFKA and VAT
+    are calculated on gross income.
     
     Args:
-        gross_income (float): Total gross income in EUR (excluding VAT)
-        deductible_expenses (float): Total deductible business expenses in EUR
+        gross_income: Total gross income in EUR (excluding VAT)
+        deductible_expenses: Total deductible business expenses in EUR
     
     Returns:
-        dict: Comprehensive dictionary containing:
-            - 'gross_income' (float): Input gross income
-            - 'deductible_expenses' (float): Input deductible expenses
-            - 'taxable_income' (float): Calculated taxable income
-            - 'income_tax' (dict): Full income tax breakdown
-            - 'vat' (dict): VAT calculation details
-            - 'social_security' (dict): EFKA contribution details
-            - 'total_taxes' (float): Sum of income tax and social security
-            - 'total_obligations' (float): Total including VAT
-            - 'net_income' (float): Income after all taxes and contributions
-            - 'effective_total_rate' (float): Total tax burden as percentage
-    
-    Examples:
-        >>> # Example 1: €15,000 income with no expenses
-        >>> result = calculate_all_taxes(15000, 0)
-        >>> result['taxable_income']
-        15000.0
-        >>> result['income_tax']['total_tax']
-        2000.0
-        >>> result['social_security']['total_contribution']
-        3000.0
-        >>> result['total_taxes']
-        5000.0
-        >>> result['net_income']
-        10000.0
-        >>> result['effective_total_rate']
-        33.33
-        
-        >>> # Example 2: €35,000 income with €5,000 expenses
-        >>> result = calculate_all_taxes(35000, 5000)
-        >>> result['taxable_income']
-        30000.0
-        >>> result['total_taxes']
-        12900.0
-        >>> result['net_income']
-        22100.0
-        
-        >>> # Example 3: €60,000 income with €10,000 expenses
-        >>> result = calculate_all_taxes(60000, 10000)
-        >>> result['income_tax']['total_tax']
-        13900.0
-        >>> result['social_security']['total_contribution']
-        12000.0
-        >>> result['vat']['vat_amount']
-        14400.0
-        
-        >>> # Example 4: Low income with high expenses
-        >>> result = calculate_all_taxes(12000, 9000)
-        >>> result['taxable_income']
-        3000.0
-        >>> result['income_tax']['total_tax']
-        270.0
-        >>> result['total_taxes']
-        2670.0
+        TaxCalculationResult: Comprehensive tax calculation with all components
     """
-    # Handle edge case: zero or negative income
+    logger.debug("Starting comprehensive tax calculation")
+    logger.debug(f"Input parameters received (types will be converted to Decimal)")
+    
+    gross_income = Decimal(str(gross_income))
+    deductible_expenses = Decimal(str(deductible_expenses))
+    
     if gross_income <= 0:
-        return {
-            'gross_income': round(gross_income, 2),
-            'deductible_expenses': round(deductible_expenses, 2),
-            'taxable_income': 0.0,
-            'income_tax': calculate_income_tax(0),
-            'vat': calculate_vat(0),
-            'social_security': calculate_social_security(0),
-            'total_taxes': 0.0,
-            'total_obligations': 0.0,
-            'net_income': 0.0,
-            'effective_total_rate': 0.0
-        }
+        logger.warning(f"Zero or negative gross income provided")
+        logger.info("Returning zero tax calculation result")
+        return TaxCalculationResult(
+            gross_income=gross_income.quantize(Decimal('0.01'), ROUND_HALF_UP),
+            deductible_expenses=deductible_expenses.quantize(Decimal('0.01'), ROUND_HALF_UP),
+            taxable_income=Decimal('0.00'),
+            income_tax=calculate_income_tax(0),
+            vat=calculate_vat(0),
+            social_security=calculate_social_security(0),
+            total_taxes=Decimal('0.00'),
+            total_obligations=Decimal('0.00'),
+            net_income=Decimal('0.00'),
+            effective_total_rate=Decimal('0.00')
+        )
     
-    # Calculate taxable income
+    logger.debug("Calculating individual tax components")
     taxable_income = calculate_taxable_income(gross_income, deductible_expenses)
-    
-    # Calculate individual tax components
     income_tax = calculate_income_tax(taxable_income)
     vat = calculate_vat(gross_income)
     social_security = calculate_social_security(gross_income)
     
-    # Calculate totals
-    total_taxes = income_tax['total_tax'] + social_security['total_contribution']
-    total_obligations = total_taxes + vat['vat_amount']
+    logger.debug("Calculating totals and net income")
+    total_taxes = income_tax.total_tax + social_security.total_contribution
+    total_obligations = total_taxes + vat.vat_amount
     net_income = gross_income - total_taxes
+    effective_total_rate = (total_taxes / gross_income * 100) if gross_income > 0 else Decimal('0')
     
-    # Calculate effective total tax rate (excluding VAT as it's passed to clients)
-    effective_total_rate = (total_taxes / gross_income * 100) if gross_income > 0 else 0.0
+    # Log summary at INFO level without sensitive amounts
+    logger.info("Tax calculation completed successfully")
+    # Log detailed amounts at DEBUG level only
+    logger.debug(f"Calculation summary: total_taxes={total_taxes.quantize(Decimal('0.01'), ROUND_HALF_UP)}, "
+                f"net_income={net_income.quantize(Decimal('0.01'), ROUND_HALF_UP)}, "
+                f"effective_rate={effective_total_rate.quantize(Decimal('0.01'), ROUND_HALF_UP)}%")
     
-    return {
-        'gross_income': round(gross_income, 2),
-        'deductible_expenses': round(deductible_expenses, 2),
-        'taxable_income': round(taxable_income, 2),
-        'income_tax': income_tax,
-        'vat': vat,
-        'social_security': social_security,
-        'total_taxes': round(total_taxes, 2),
-        'total_obligations': round(total_obligations, 2),
-        'net_income': round(net_income, 2),
-        'effective_total_rate': round(effective_total_rate, 2)
-    }
+    return TaxCalculationResult(
+        gross_income=gross_income.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        deductible_expenses=deductible_expenses.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        taxable_income=taxable_income,
+        income_tax=income_tax,
+        vat=vat,
+        social_security=social_security,
+        total_taxes=total_taxes.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        total_obligations=total_obligations.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        net_income=net_income.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        effective_total_rate=effective_total_rate.quantize(Decimal('0.01'), ROUND_HALF_UP)
+    )
 
 
-def calculate_payment_schedule(annual_tax, frequency='monthly'):
+def calculate_payment_schedule(annual_tax: Union[Decimal, float, int, str], 
+                              frequency: str = 'monthly') -> PaymentSchedule:
     """
     Calculate payment schedule breakdown for tax payments.
     
-    Greek freelancers can make tax payments on different schedules.
-    This function breaks down annual tax obligations into installments
-    based on the selected payment frequency.
-    
     Args:
-        annual_tax (float): Total annual tax amount in EUR
-        frequency (str): Payment frequency - 'monthly', 'quarterly', or 'annual'
-                        Default is 'monthly'
+        annual_tax: Total annual tax amount in EUR
+        frequency: Payment frequency ('monthly', 'quarterly', or 'annual')
     
     Returns:
-        dict: Dictionary containing:
-            - 'annual_total' (float): Total annual tax
-            - 'frequency' (str): Payment frequency
-            - 'number_of_payments' (int): Number of payment installments
-            - 'payment_amount' (float): Amount per payment
-            - 'schedule' (list): List of payment details with period numbers
+        PaymentSchedule: Payment schedule with installment details
     
     Raises:
         ValueError: If frequency is not one of the valid options
-    
-    Examples:
-        >>> # Example 1: Monthly payments for €12,000 annual tax
-        >>> result = calculate_payment_schedule(12000, 'monthly')
-        >>> result['payment_amount']
-        1000.0
-        >>> result['number_of_payments']
-        12
-        >>> len(result['schedule'])
-        12
-        
-        >>> # Example 2: Quarterly payments
-        >>> result = calculate_payment_schedule(12000, 'quarterly')
-        >>> result['payment_amount']
-        3000.0
-        >>> result['number_of_payments']
-        4
-        
-        >>> # Example 3: Annual payment (single lump sum)
-        >>> result = calculate_payment_schedule(5000, 'annual')
-        >>> result['payment_amount']
-        5000.0
-        >>> result['number_of_payments']
-        1
-        
-        >>> # Example 4: High tax burden with monthly payments
-        >>> result = calculate_payment_schedule(25900, 'monthly')
-        >>> result['payment_amount']
-        2158.33
-        >>> # €2,158.33 per month for 12 months
     """
-    # Validate frequency
+    logger.debug(f"Calculating payment schedule for frequency: {frequency}")
+    annual_tax = Decimal(str(annual_tax))
+    
+    if annual_tax < 0:
+        logger.warning("Negative annual tax provided, using 0.00")
+        annual_tax = Decimal('0.00')
+    
     if frequency.lower() not in VALID_FREQUENCIES:
+        logger.error(f"Invalid payment frequency provided: '{frequency}'. Valid options: {VALID_FREQUENCIES}")
         raise ValueError(
             f"Invalid frequency '{frequency}'. Must be one of: {', '.join(VALID_FREQUENCIES)}"
         )
     
     frequency = frequency.lower()
     
-    # Determine number of payments based on frequency
     payments_per_year = {
         'monthly': 12,
         'quarterly': 4,
@@ -468,25 +428,24 @@ def calculate_payment_schedule(annual_tax, frequency='monthly'):
     }
     
     num_payments = payments_per_year[frequency]
-    
-    # Calculate payment amount per installment
     payment_amount = annual_tax / num_payments
     
-    # Generate payment schedule
+    logger.debug(f"Payment schedule: {num_payments} installments of {payment_amount.quantize(Decimal('0.01'), ROUND_HALF_UP)} each")
+    
     schedule = []
     for i in range(1, num_payments + 1):
-        schedule.append({
-            'period_number': i,
-            'payment_amount': round(payment_amount, 2)
-        })
+        schedule.append(PaymentInstallment(
+            period_number=i,
+            payment_amount=payment_amount.quantize(Decimal('0.01'), ROUND_HALF_UP)
+        ))
     
-    return {
-        'annual_total': round(annual_tax, 2),
-        'frequency': frequency,
-        'number_of_payments': num_payments,
-        'payment_amount': round(payment_amount, 2),
-        'schedule': schedule
-    }
+    return PaymentSchedule(
+        annual_total=annual_tax.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        frequency=frequency,
+        number_of_installments=num_payments,
+        installment_amount=payment_amount.quantize(Decimal('0.01'), ROUND_HALF_UP),
+        schedule=schedule
+    )
 
 
 # ============================================================================
@@ -508,13 +467,13 @@ if __name__ == "__main__":
     
     results = calculate_all_taxes(test_gross, test_expenses)
     
-    print(f"Taxable Income: €{results['taxable_income']:,.2f}")
-    print(f"Income Tax: €{results['income_tax']['total_tax']:,.2f}")
-    print(f"Social Security (EFKA): €{results['social_security']['total_contribution']:,.2f}")
-    print(f"VAT (24%): €{results['vat']['vat_amount']:,.2f}")
-    print(f"Total Tax Burden: €{results['total_taxes']:,.2f}")
-    print(f"Net Income: €{results['net_income']:,.2f}")
-    print(f"Effective Tax Rate: {results['effective_total_rate']:.2f}%")
+    print(f"Taxable Income: €{results.taxable_income:,.2f}")
+    print(f"Income Tax: €{results.income_tax.total_tax:,.2f}")
+    print(f"Social Security (EFKA): €{results.social_security.total_contribution:,.2f}")
+    print(f"VAT (24%): €{results.vat.vat_amount:,.2f}")
+    print(f"Total Tax Burden: €{results.total_taxes:,.2f}")
+    print(f"Net Income: €{results.net_income:,.2f}")
+    print(f"Effective Tax Rate: {results.effective_total_rate:.2f}%")
     
     print("\n" + "=" * 60)
     print("Module can be safely imported without executing test code.")

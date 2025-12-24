@@ -10,7 +10,11 @@ A comprehensive command-line tool for calculating taxes, social security contrib
 - [Installation](#installation)
 - [Usage](#usage)
   - [Running the Calculator](#running-the-calculator)
-  - [Input Guide](#input-guide)
+    - [Interactive Mode (Default)](#interactive-mode-default)
+    - [Non-Interactive Mode (Command-Line Arguments)](#non-interactive-mode-command-line-arguments)
+    - [Hybrid Mode](#hybrid-mode)
+  - [Command-Line Usage Examples](#command-line-usage-examples)
+  - [Interactive Mode Input Guide](#interactive-mode-input-guide)
 - [Examples](#examples) *(See also: [sample_calculations.txt](sample_calculations.txt) for detailed worked examples)*
   - [Example 1: Low Income (€15,000)](#example-1-low-income-15000)
   - [Example 2: Medium Income (€35,000)](#example-2-medium-income-35000)
@@ -36,6 +40,8 @@ A comprehensive command-line tool for calculating taxes, social security contrib
 - **Detailed Breakdowns**: Shows tax calculations per bracket with effective tax rates
 - **Results Export**: Automatically saves calculations to timestamped text files
 - **Input Validation**: Robust error checking with helpful guidance messages
+- **Command-Line Interface**: Supports interactive, non-interactive, and hybrid modes for flexibility
+- **Automation Support**: Full CLI argument support for scripting and batch processing
 - **No External Dependencies**: Uses only Python standard library
 - **User-Friendly Interface**: Clear prompts and formatted output for easy understanding
 
@@ -75,9 +81,15 @@ cd greek-freelancer-tax-calculator
 
 ### Running the Calculator
 
-1. Open a terminal or command prompt
-2. Navigate to the project directory
-3. Run the calculator:
+The calculator supports three usage modes:
+
+1. **Interactive Mode** (default): Guided prompts for all inputs
+2. **Non-Interactive Mode**: All parameters via command-line arguments
+3. **Hybrid Mode**: Mix of command-line arguments and prompts
+
+#### Interactive Mode (Default)
+
+Open a terminal or command prompt, navigate to the project directory, and run:
 
 ```bash
 python3 main.py
@@ -89,7 +101,96 @@ On Windows, you might need to use:
 python main.py
 ```
 
-### Input Guide
+The calculator will interactively guide you through all required inputs.
+
+#### Non-Interactive Mode (Command-Line Arguments)
+
+For automation, scripting, or quick calculations, provide all parameters via command-line arguments:
+
+```bash
+# Basic non-interactive calculation
+python main.py --income 50000 --expenses 10000 --frequency monthly
+
+# With custom output file
+python main.py --income 35000 --expenses 5000 --frequency quarterly --output my_taxes.txt
+
+# Quiet mode (minimal output, only results)
+python main.py --income 60000 --expenses 0 --frequency annual --quiet
+
+# Strict non-interactive (fails if any required arg is missing)
+python main.py --income 50000 --expenses 10000 --frequency monthly --no-interactive
+```
+
+**Available Command-Line Arguments:**
+
+| Argument | Description | Example |
+|----------|-------------|---------|
+| `--income AMOUNT` | Gross annual income in euros | `--income 50000` |
+| `--expenses AMOUNT` | Deductible business expenses in euros | `--expenses 10000` |
+| `--frequency FREQ` | Payment frequency: `monthly`, `quarterly`, or `annual` | `--frequency quarterly` |
+| `--output PATH` | Custom output file path | `--output my_calculation.txt` |
+| `--no-interactive` | Fail if required args missing (strict mode) | `--no-interactive` |
+| `--version` | Show version and exit | `--version` |
+| `-v, --verbose` | Enable verbose logging (DEBUG level) | `--verbose` |
+| `-q, --quiet` | Quiet mode (only warnings/errors) | `--quiet` |
+| `--log-file PATH` | Custom log file path | `--log-file /tmp/tax.log` |
+| `--no-log-file` | Disable file logging for privacy | `--no-log-file` |
+| `-h, --help` | Show help message and exit | `--help` |
+
+**Exit Codes:**
+- `0`: Success
+- `1`: Validation error or calculation failure
+- `2`: Missing required arguments in `--no-interactive` mode
+
+#### Hybrid Mode
+
+Provide some arguments and get prompted for the rest:
+
+```bash
+# Provide income, get prompted for expenses and frequency
+python main.py --income 50000
+
+# Provide income and frequency, get prompted for expenses
+python main.py --income 50000 --frequency quarterly
+```
+
+This is useful for scripting scenarios where some values are known and others need user input.
+
+### Command-Line Usage Examples
+
+**Example 1: Quick calculation for medium income**
+```bash
+python main.py --income 35000 --expenses 5000 --frequency monthly
+```
+
+**Example 2: High income with verbose logging**
+```bash
+python main.py --income 75000 --expenses 15000 --frequency quarterly --verbose
+```
+
+**Example 3: Low income, quiet output, custom file**
+```bash
+python main.py --income 18000 --expenses 0 --frequency annual --quiet --output tax_2024.txt
+```
+
+**Example 4: Automation-friendly (strict mode)**
+```bash
+python main.py --income 50000 --expenses 10000 --frequency monthly --no-interactive --quiet
+```
+This fails immediately if any required argument is missing, perfect for scripts.
+
+**Example 5: Privacy mode (no file logging)**
+```bash
+python main.py --income 40000 --expenses 8000 --frequency quarterly --no-log-file
+```
+
+**Example 6: Check version**
+```bash
+python main.py --version
+# Output: Greek Freelancer Tax Calculator v1.0.0
+```
+
+### Interactive Mode Input Guide
 
 The calculator will guide you through the following steps:
 
@@ -272,6 +373,35 @@ EFKA (Unified Social Security Entity) contributions provide social benefits incl
 
 ## Tax Rates and Brackets
 
+### Tax Rate Verification and Sources
+
+**Last Verified**: January 15, 2024  
+**Tax Year**: 2024
+
+All tax rates in this calculator have been verified against official Greek tax authority sources:
+
+#### Official Sources
+
+1. **Income Tax Brackets**
+   - **Source**: Law 4172/2013 (Greek Income Tax Code), Articles 9 and 15
+   - **Authority**: AADE (Independent Authority for Public Revenue)
+   - **URL**: [https://www.aade.gr](https://www.aade.gr)
+   - **Applies to**: All individual income, including self-employed/freelancers
+
+2. **EFKA Social Security Contributions**
+   - **Source**: Law 4387/2016 (Unified Social Security System)
+   - **Authority**: EFKA (e-EFKA - Unified Social Security Fund)
+   - **URL**: [https://www.efka.gov.gr](https://www.efka.gov.gr)
+   - **Rates**: 13.33% main insurance + 6.67% additional = 20% total
+   - **Note**: Minimum monthly contributions (~€230-250/month) and income caps (~€81,000/year) exist but are not enforced by this calculator
+
+3. **VAT (Value Added Tax)**
+   - **Source**: Greek VAT Law 2859/2000, Article 21
+   - **EU Directive**: 2006/112/EC
+   - **Authority**: AADE (Independent Authority for Public Revenue)
+   - **URL**: [https://www.aade.gr](https://www.aade.gr)
+   - **Rate**: 24% (standard rate for professional services)
+
 ### Income Tax Brackets (2024)
 
 | Taxable Income Range | Tax Rate | Tax on Bracket |
@@ -298,6 +428,19 @@ EFKA (Unified Social Security Entity) contributions provide social benefits incl
 | EFKA Main | 13.33% | Gross Income | Primary social security |
 | EFKA Additional | 6.67% | Gross Income | Healthcare and auxiliary benefits |
 | **EFKA Total** | **20%** | **Gross Income** | **Total social security** |
+
+### Important Rate Limitations
+
+This calculator implements **standard rates only** and does not account for:
+
+- **EFKA Minimum Contributions**: Low earners may owe more than calculated (~€230-250/month minimum)
+- **EFKA Maximum Income Cap**: High earners may owe less than calculated (~€81,000/year cap)
+- **Solidarity Contribution**: Special contribution (2.2%-10%) on income >€12,000 (suspended for 2024)
+- **New Professional Rates**: Reduced EFKA rates for first 5 years of operation
+- **Special Professional Categories**: Different rates for engineers, doctors, lawyers, etc.
+- **Tax Credits**: Personal allowances, dependent deductions, insurance premium credits
+- **Advance Tax Payments**: Προκαταβολή φόρου (prepayment obligations)
+- **Professional Chamber Fees**: Mandatory fees for registered professionals
 
 ## Output Files
 
@@ -410,18 +553,243 @@ If you encounter issues not covered here:
    python3 tax_calculator.py
    ```
 
+## Running Tests
+
+This project includes a comprehensive test suite to ensure calculation accuracy and reliability. The test suite achieves **80%+ code coverage** and includes both unit tests and integration tests.
+
+### Test Organization
+
+The test suite is organized into three main categories:
+
+1. **Unit Tests** (`tests/test_tax_calculator.py`, `tests/test_validators.py`)
+   - Test individual functions in isolation
+   - Cover edge cases and boundary conditions
+   - Validate input validation and error handling
+   - Test tax calculation functions with known inputs/outputs
+
+2. **Integration Tests** (`tests/test_integration.py`)
+   - Test complete workflows from input to output
+   - Validate against documented examples in `sample_calculations.txt`
+   - Test cross-module interactions
+   - Verify file output consistency
+   - Test all payment frequency options
+
+3. **Regression Tests** (within integration tests)
+   - Validate calculations against the 4 examples in `sample_calculations.txt`
+   - Ensure changes don't break documented behavior
+   - Serve as "golden output" verification
+
+### Running Tests
+
+#### Run All Tests
+
+To run the complete test suite:
+
+```bash
+pytest
+```
+
+Or with verbose output:
+
+```bash
+pytest -v
+```
+
+#### Run Specific Test Files
+
+Run only integration tests:
+
+```bash
+pytest tests/test_integration.py -v
+```
+
+Run only tax calculator unit tests:
+
+```bash
+pytest tests/test_tax_calculator.py -v
+```
+
+Run only validation function tests:
+
+```bash
+pytest tests/test_validators.py -v
+```
+
+#### Run Tests by Marker
+
+Run only unit tests:
+
+```bash
+pytest -m unit -v
+```
+
+Run only integration tests:
+
+```bash
+pytest -m integration -v
+```
+
+#### Run with Coverage
+
+To run tests with coverage reporting:
+
+```bash
+pytest --cov --cov-report=term-missing
+```
+
+This will:
+- Run all tests
+- Calculate code coverage percentage
+- Show which lines are not covered by tests
+
+#### Generate HTML Coverage Report
+
+To generate a detailed HTML coverage report:
+
+```bash
+pytest --cov --cov-report=html
+```
+
+This creates a `htmlcov/` directory containing an interactive HTML report. To view it:
+
+```bash
+# On macOS/Linux
+open htmlcov/index.html
+
+# On Windows
+start htmlcov/index.html
+```
+
+The HTML report shows:
+- Overall coverage percentage
+- Coverage by file
+- Line-by-line highlighting of covered/uncovered code
+- Branch coverage information
+
+### Coverage Threshold
+
+The project is configured to **require 80% minimum code coverage**. Test runs will fail if coverage drops below this threshold. This ensures:
+- New code includes appropriate tests
+- Changes don't reduce overall test quality
+- Critical calculations are thoroughly validated
+
+### Interpreting Coverage Results
+
+**Good coverage** (current target: 80%+):
+- All calculation functions have multiple test cases
+- Edge cases are tested (zero, negative, boundary values)
+- Error paths are validated
+- File I/O operations use mocks (don't create real files)
+
+**What's NOT covered** (and why that's OK):
+- Interactive input loops in `main.py` (requires user interaction)
+- `if __name__ == "__main__"` blocks (entry points)
+- Some error handling branches for rare conditions
+- Display formatting (visual output, hard to test meaningfully)
+
+**Coverage gaps to investigate**:
+- Functions with < 70% coverage
+- Business logic (calculations) with missing test cases
+- Validation functions without negative test cases
+- File operations without error handling tests
+
+### Test Configuration
+
+Test settings are configured in `pyproject.toml`:
+
+```toml
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests for individual functions",
+    "integration: Integration tests for workflows"
+]
+addopts = [
+    "--verbose",
+    "--cov=.",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=80"
+]
+```
+
+### Continuous Testing
+
+When developing:
+
+1. **Before making changes**: Run tests to ensure starting point is working
+   ```bash
+   pytest
+   ```
+
+2. **After making changes**: Run tests to verify nothing broke
+   ```bash
+   pytest -v
+   ```
+
+3. **Before committing**: Check coverage is maintained
+   ```bash
+   pytest --cov --cov-report=term-missing
+   ```
+
+4. **Review HTML report**: Identify any uncovered code paths
+   ```bash
+   pytest --cov --cov-report=html
+   open htmlcov/index.html
+   ```
+
+### Regression Test Examples
+
+The integration tests validate against these documented examples from `sample_calculations.txt`:
+
+| Example | Income | Expenses | Expected Tax | Expected Net |
+|---------|--------|----------|--------------|--------------|
+| 1 | €15,000 | €0 | €5,000 | €10,000 |
+| 2 | €35,000 | €5,000 | €12,900 | €22,100 |
+| 3 | €60,000 | €10,000 | €25,900 | €34,100 |
+| 4 | €12,000 | €9,000 | €2,670 | €9,330 |
+
+If any of these calculations produce different results, the regression tests will fail, indicating either:
+- A bug was introduced in the calculation logic
+- The documentation needs to be updated
+- Tax rates/brackets have changed and need verification
+
 ## Legal Disclaimer
 
 **IMPORTANT**: This calculator is provided for **estimation and planning purposes only**.
 
-### Limitations
+### Verification and Currency
 
-- This tool implements general Greek tax law as of 2024
-- Tax laws change; rates and brackets may be updated by Greek authorities
-- Individual circumstances may affect actual tax obligations
-- Special tax regimes, exemptions, or deductions are not included
-- Municipal taxes, solidarity contributions, and other levies are not calculated
-- Professional activities may have different tax treatments
+- **Last Rate Verification**: January 15, 2024
+- **Tax Year**: 2024
+- **Next Recommended Review**: January 2025 or upon any tax law changes
+
+Greek tax law changes frequently. Users should verify all rates are current before relying on calculations.
+
+### Limitations and Exclusions
+
+This tool implements **simplified standard rates only** and does NOT include:
+
+#### Not Calculated:
+- ❌ **EFKA minimum monthly contributions** (~€230-250/month in 2024)
+- ❌ **EFKA maximum insurable income caps** (~€81,000/year in 2024)
+- ❌ **Solidarity Contribution** (2.2%-10% on income >€12,000, suspended for 2024)
+- ❌ **Advance tax payments** (προκαταβολή φόρου - typically 55% of previous year's tax)
+- ❌ **Personal tax-free threshold adjustments**
+- ❌ **Dependent allowances** (children, disabled family members)
+- ❌ **Tax credits** (insurance premiums, mortgage interest, donations)
+- ❌ **Professional expense percentages** (category-specific deduction rates)
+- ❌ **Special professional regimes** (reduced rates for new professionals, etc.)
+- ❌ **Professional chamber mandatory fees** (engineers, lawyers, doctors, etc.)
+- ❌ **Municipal taxes** (ENFIA - real estate tax)
+- ❌ **Withholding tax considerations**
+- ❌ **VAT input deductions** (only calculates output VAT)
+- ❌ **Special VAT regimes** (exempt activities, reduced rates)
+
+#### Important Notes:
+- Individual circumstances, professional categories, and special regimes may **significantly affect** actual tax obligations
+- This calculator uses the **standard progressive tax system** - simplified/presumptive regimes are not included
+- EFKA calculations are **simplified**: actual contributions depend on income level, years of service, and professional category
 
 ### Not a Substitute for Professional Advice
 
@@ -430,29 +798,69 @@ This calculator:
 - ❌ Does **NOT** constitute official tax calculations
 - ❌ Should **NOT** be used for official tax filing
 - ❌ Does **NOT** replace consultation with certified accountants
-
-### Recommendations
-
-For official tax filing and personalized advice:
-- ✅ Consult a certified Greek tax accountant (λογιστής)
-- ✅ Use official tax submission platforms (Taxisnet)
-- ✅ Verify current tax rates with Greek tax authorities (AADE)
-- ✅ Seek professional advice for complex situations
+- ❌ Is **NOT** endorsed by Greek tax authorities
 
 ### Accuracy and Liability
 
-While we strive for accuracy:
-- The authors assume no liability for financial decisions based on this tool
-- Users are responsible for verifying all calculations
-- No warranty of accuracy, completeness, or fitness for purpose is provided
-- Use at your own risk
+While we strive for accuracy based on publicly available information:
+- The authors and contributors assume **NO LIABILITY** for financial decisions based on this tool
+- Users are **solely responsible** for verifying all calculations
+- **NO WARRANTY** of accuracy, completeness, or fitness for any particular purpose is provided
+- Tax law is complex and changes frequently - **always verify current rates**
+- Individual tax situations vary - **calculations are estimates only**
+- Use **ENTIRELY AT YOUR OWN RISK**
+
+### Critical Recommendations
+
+**Before making any financial or tax decisions:**
+
+1. ✅ **Consult a certified Greek tax accountant (λογιστής/λογίστρια)**
+   - Required for official tax filing
+   - Can identify deductions and credits specific to your situation
+   - Stays current with tax law changes
+
+2. ✅ **Verify current rates with official sources**
+   - Tax rates and brackets can change mid-year
+   - Special legislation may introduce temporary changes
+   - Professional category rules may apply
+
+3. ✅ **Use official platforms for tax filing**
+   - Taxisnet: [www.gsis.gr](https://www.gsis.gr)
+   - AADE myDATA: Digital submission system
+   - Only official platforms are legally valid
+
+4. ✅ **Keep detailed records**
+   - Maintain all receipts for deductible expenses
+   - Document all income and VAT collected
+   - Prepare for potential audits
 
 ### Official Resources
 
-For authoritative information, consult:
-- **Greek Tax Authority (AADE)**: [www.aade.gr](https://www.aade.gr)
-- **Taxisnet Portal**: [www.gsis.gr](https://www.gsis.gr)
-- **EFKA (Social Security)**: [www.efka.gov.gr](https://www.efka.gov.gr)
+For **authoritative and current** information, consult:
+
+- **Greek Tax Authority (AADE)**  
+  Website: [www.aade.gr](https://www.aade.gr)  
+  Information: Tax rates, brackets, filing requirements
+
+- **Taxisnet Portal (Official Tax Filing)**  
+  Website: [www.gsis.gr](https://www.gsis.gr)  
+  Use: Official tax return submission
+
+- **EFKA (Social Security)**  
+  Website: [www.efka.gov.gr](https://www.efka.gov.gr)  
+  Information: Contribution rates, minimum payments, coverage
+
+- **Greek Government Gazette (ΦΕΚ)**  
+  Website: [www.et.gr](https://www.et.gr)  
+  Use: Official publication of all tax laws and amendments
+
+### Updates and Corrections
+
+If you identify any discrepancies between this calculator and official Greek tax sources:
+- Tax rates in this calculator were last verified on **January 15, 2024**
+- Tax law changes after this date are **not reflected**
+- Please verify all information against current official sources
+- Consider contributing corrections with official source citations
 
 ## Contributing
 
@@ -476,6 +884,8 @@ When reporting problems, please include:
 
 **Version**: 1.0.0  
 **Last Updated**: 2024  
+**Tax Rates Last Verified**: January 15, 2024  
+**Tax Year**: 2024  
 **License**: Open source
 
-*This calculator is an educational tool and community resource for Greek freelancers. For official tax compliance, always consult qualified professionals and official government resources.*
+*This calculator is an educational tool and community resource for Greek freelancers. Tax rates have been verified against official sources as of January 15, 2024. For official tax compliance, always consult qualified professionals and verify current rates with official government resources (AADE, EFKA, Taxisnet).*

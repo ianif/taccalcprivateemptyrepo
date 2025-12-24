@@ -2,14 +2,16 @@
 """
 Greek Freelancer Tax Calculator - Command Line Interface
 
-Interactive CLI application for calculating taxes for Greek freelancers.
-Provides a user-friendly interface with robust input validation and
-comprehensive tax calculations including income tax, VAT, and social security.
+CLI application for calculating taxes for Greek freelancers with support for
+interactive, non-interactive, and hybrid modes. Provides robust input validation
+and comprehensive tax calculations including income tax, VAT, and social security.
 
-TYPICAL USAGE:
+USAGE MODES:
+
+1. INTERACTIVE MODE (default):
     python main.py
     
-    Then follow the interactive prompts to:
+    Follow the interactive prompts to:
     1. Enter gross annual income (e.g., 35000 for €35,000)
     2. Enter deductible business expenses (e.g., 5000 for €5,000)
     3. Choose payment frequency (monthly, quarterly, or annual)
@@ -17,7 +19,17 @@ TYPICAL USAGE:
     5. View comprehensive tax breakdown and payment schedule
     6. Results are automatically saved to a timestamped file
 
-EXAMPLE SESSION:
+2. NON-INTERACTIVE MODE (via command-line arguments):
+    python main.py --income 35000 --expenses 5000 --frequency quarterly
+    
+    All parameters provided via CLI, no prompts. Perfect for automation.
+
+3. HYBRID MODE (partial CLI arguments):
+    python main.py --income 35000
+    
+    Provided arguments are used, prompts shown for missing values.
+
+EXAMPLE SESSION (Interactive):
     Gross annual income (€): 35000
     Deductible expenses (€): 5000
     Payment frequency: 2 (Quarterly)
@@ -29,72 +41,188 @@ EXAMPLE SESSION:
       - Total taxes: €12,900
       - Net income: €22,100
       - Quarterly payment: €3,225
+
+EXAMPLE COMMAND (Non-Interactive):
+    python main.py --income 35000 --expenses 5000 --frequency quarterly --quiet
+    
+    Same calculation as above, minimal output, perfect for scripts.
+
+For full CLI documentation, run: python main.py --help
 """
 
 import sys
+import os
+import re
+import logging
+from pathlib import Path
 from datetime import datetime
+from typing import Dict, Optional, Union, List
+from decimal import Decimal
+import argparse
 from tax_calculator import (
     calculate_all_taxes,
-    calculate_payment_schedule,
-    VALID_FREQUENCIES
+    calculate_payment_schedule
 )
+from config import (
+    VALID_FREQUENCIES,
+    MAX_ANNUAL_INCOME
+)
+from models import TaxCalculationResult, PaymentSchedule
+from formatters import (
+    format_currency,
+    format_input_parameters,
+    format_income_breakdown,
+    format_income_tax_breakdown,
+    format_vat_and_social_security,
+    format_payment_schedule,
+    format_summary,
+    ConsoleWriter,
+    FileWriter
+)
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+
+def setup_logging(verbose: bool = False, quiet: bool = False, 
+                 log_file: Optional[str] = None, no_log_file: bool = False) -> None:
+    """
+    Configure logging for the application.
+    
+    Args:
+        verbose: Enable DEBUG level logging to console
+        quiet: Show only WARNING and above to console
+        log_file: Custom log file path (default: tax_calculator_debug.log)
+        no_log_file: Disable file logging entirely
+    """
+    # Determine console log level
+    if verbose:
+        console_level = logging.DEBUG
+    elif quiet:
+        console_level = logging.WARNING
+    else:
+        console_level = logging.INFO
+    
+    # Set up handlers
+    handlers = []
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    handlers.append(console_handler)
+    
+    # File handler (unless disabled)
+    if not no_log_file:
+        log_file_path = log_file if log_file else 'tax_calculator_debug.log'
+        try:
+            file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+            file_handler.setLevel(logging.DEBUG)
+            file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            file_handler.setFormatter(file_formatter)
+            handlers.append(file_handler)
+        except (PermissionError, OSError) as e:
+            # If we can't create log file, continue without it
+            print(f"⚠️  Warning: Could not create log file '{log_file_path}': {e}")
+            print("   Continuing without file logging.")
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers,
+        force=True  # Override any existing configuration
+    )
+
+# Create logger for this module (will be configured by setup_logging)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# CONFIGURATION CONSTANTS
+# ============================================================================
+
+# Note: Tax-related constants (MAX_ANNUAL_INCOME, VAT_RATE, EFKA rates, etc.)
+# are imported from config.py for centralized configuration management.
+
+# Output directory for saved tax calculation files
+# All calculation results will be saved to this directory to prevent
+# path traversal attacks and maintain organized file storage
+OUTPUT_DIR = 'output'
+
+# Maximum file size for output files (10 MB)
+# Prevents potential disk space exhaustion attacks or accidental creation
+# of extremely large files due to calculation errors
+MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
 # ============================================================================
 # INPUT VALIDATION FUNCTIONS
 # ============================================================================
 
-def validate_positive_number(value_str, field_name):
+def validate_positive_number(value_str: str, field_name: str) -> Decimal:
     """
     Validate that input is a positive number (> 0).
     
     Args:
-        value_str (str): String input from user
-        field_name (str): Name of field for error messages
+        value_str: String input from user
+        field_name: Name of field for error messages
     
     Returns:
-        float: Validated positive number
+        Decimal: Validated positive number
     
     Raises:
         ValueError: If input is not a valid positive number
     """
+    logger.debug(f"Validating positive number for {field_name}: '{value_str}'")
     try:
-        value = float(value_str.strip())
-        if value <= 0:
-            raise ValueError(f"{field_name} must be greater than zero.")
+        value = Decimal(value_str.strip())
+        if value == 0:
+            logger.warning(f"Validation failed: {field_name} is zero")
+            raise ValueError(f"{field_name} must be greater than zero (you entered 0).")
+        elif value < 0:
+            logger.warning(f"Validation failed: {field_name} is negative")
+            raise ValueError(f"{field_name} cannot be negative (you entered {value:,.2f}).")
+        logger.debug(f"Validation successful: {field_name} is valid positive number")
         return value
     except ValueError as e:
         if "could not convert" in str(e):
-            raise ValueError(f"{field_name} must be a valid number.")
+            logger.warning(f"Validation failed: {field_name} is not a valid number: '{value_str}'")
+            raise ValueError(f"{field_name} must be a valid number (not '{value_str}').")
         raise
 
 
-def validate_non_negative_number(value_str, field_name):
+def validate_non_negative_number(value_str: str, field_name: str) -> Decimal:
     """
     Validate that input is a non-negative number (>= 0).
     
     Args:
-        value_str (str): String input from user
-        field_name (str): Name of field for error messages
+        value_str: String input from user
+        field_name: Name of field for error messages
     
     Returns:
-        float: Validated non-negative number
+        Decimal: Validated non-negative number
     
     Raises:
         ValueError: If input is not a valid non-negative number
     """
+    logger.debug(f"Validating non-negative number for {field_name}: '{value_str}'")
     try:
-        value = float(value_str.strip())
+        value = Decimal(value_str.strip())
         if value < 0:
-            raise ValueError(f"{field_name} cannot be negative.")
+            logger.warning(f"Validation failed: {field_name} is negative")
+            raise ValueError(f"{field_name} cannot be negative (you entered {value:,.2f}).")
+        logger.debug(f"Validation successful: {field_name} is valid non-negative number")
         return value
     except ValueError as e:
-        if "could not convert" in str(e):
-            raise ValueError(f"{field_name} must be a valid number.")
+        if "could not convert" in str(e) or "Invalid literal" in str(e):
+            logger.warning(f"Validation failed: {field_name} is not a valid number: '{value_str}'")
+            raise ValueError(f"{field_name} must be a valid number (not '{value_str}').")
         raise
 
 
-def validate_expenses_against_income(expenses, gross_income):
+def validate_expenses_against_income(expenses: Decimal, gross_income: Decimal) -> None:
     """
     Validate that expenses do not exceed gross income.
     
@@ -105,29 +233,130 @@ def validate_expenses_against_income(expenses, gross_income):
     Raises:
         ValueError: If expenses exceed gross income
     """
+    logger.debug("Validating expenses against gross income")
     if expenses > gross_income:
+        logger.warning("Validation failed: Expenses exceed gross income")
         raise ValueError(
             f"Deductible expenses (€{expenses:,.2f}) cannot exceed "
             f"gross income (€{gross_income:,.2f})."
         )
+    logger.debug("Validation successful: Expenses do not exceed gross income")
 
 
-def validate_realistic_amount(value, field_name, max_amount=10000000):
+def validate_realistic_amount(value: Decimal, field_name: str, max_amount: Optional[float] = None) -> None:
     """
     Validate that amount is realistic (not absurdly high).
     
     Args:
-        value (float): Amount to validate
-        field_name (str): Name of field for error messages
-        max_amount (float): Maximum realistic amount (default: 10 million EUR)
+        value: Amount to validate
+        field_name: Name of field for error messages
+        max_amount: Maximum realistic amount (default: uses MAX_ANNUAL_INCOME constant)
     
     Raises:
         ValueError: If amount exceeds realistic maximum
     """
+    if max_amount is None:
+        max_amount = MAX_ANNUAL_INCOME
+    
+    logger.debug(f"Validating realistic amount for {field_name} (max: €{max_amount:,.0f})")
     if value > max_amount:
+        logger.warning(f"Validation failed: {field_name} exceeds realistic maximum")
         raise ValueError(
             f"{field_name} of €{value:,.2f} seems unrealistic. "
             f"Please enter a value less than €{max_amount:,.0f}."
+        )
+    logger.debug(f"Validation successful: {field_name} is within realistic range")
+
+
+# ============================================================================
+# FILE SECURITY FUNCTIONS
+# ============================================================================
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Sanitize and validate filename to prevent path traversal attacks.
+    
+    Args:
+        filename: Proposed filename to sanitize
+    
+    Returns:
+        str: Sanitized filename safe for use
+    
+    Raises:
+        ValueError: If filename contains unsafe characters or patterns
+    """
+    logger.debug(f"Sanitizing filename: '{filename}'")
+    
+    # Check for empty filename
+    if not filename or not filename.strip():
+        logger.warning("Filename sanitization failed: empty filename")
+        raise ValueError("Filename cannot be empty")
+    
+    filename = filename.strip()
+    
+    # Check for absolute paths (Unix-style)
+    if filename.startswith('/'):
+        logger.warning(f"Filename sanitization failed: absolute Unix path detected")
+        raise ValueError(f"Absolute paths are not allowed: {filename}")
+    
+    # Check for absolute paths (Windows-style)
+    if len(filename) > 1 and filename[1] == ':':
+        logger.warning(f"Filename sanitization failed: absolute Windows path detected")
+        raise ValueError(f"Absolute paths are not allowed: {filename}")
+    
+    # Check for path traversal patterns
+    if '..' in filename:
+        logger.warning(f"Filename sanitization failed: path traversal pattern detected")
+        raise ValueError(f"Path traversal patterns (..) are not allowed: {filename}")
+    
+    # Check for directory separators
+    if '/' in filename or '\\' in filename:
+        logger.warning(f"Filename sanitization failed: directory separator detected")
+        raise ValueError(f"Directory separators are not allowed in filename: {filename}")
+    
+    # Validate characters: allow alphanumeric, underscore, hyphen, dot
+    # Pattern: only letters, digits, underscore, hyphen, and dot
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
+        logger.warning(f"Filename sanitization failed: invalid characters detected")
+        raise ValueError(
+            f"Filename contains invalid characters. "
+            f"Only alphanumeric, underscore, hyphen, and dot are allowed: {filename}"
+        )
+    
+    logger.debug(f"Filename sanitization successful: '{filename}'")
+    return filename
+
+
+def ensure_output_directory() -> None:
+    """
+    Ensure output directory exists and is writable.
+    
+    Raises:
+        PermissionError: If directory cannot be created or is not writable
+        OSError: If directory creation fails for system-level reasons
+    """
+    logger.debug(f"Ensuring output directory exists: '{OUTPUT_DIR}'")
+    try:
+        # Create directory if it doesn't exist (parents=True for nested paths)
+        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Output directory verified: '{OUTPUT_DIR}'")
+        
+        # Verify the directory is writable by checking permissions
+        if not os.access(OUTPUT_DIR, os.W_OK):
+            logger.error(f"Output directory '{OUTPUT_DIR}' is not writable")
+            raise PermissionError(
+                f"Output directory '{OUTPUT_DIR}' exists but is not writable. "
+                f"Please check directory permissions."
+            )
+            
+    except PermissionError:
+        # Re-raise permission errors with context
+        raise
+    except OSError as e:
+        # Handle other OS-level errors (disk full, etc.)
+        logger.error(f"Failed to create output directory: {str(e)}")
+        raise OSError(
+            f"Failed to create or access output directory '{OUTPUT_DIR}': {str(e)}"
         )
 
 
@@ -135,14 +364,14 @@ def validate_realistic_amount(value, field_name, max_amount=10000000):
 # DISPLAY FUNCTIONS
 # ============================================================================
 
-def display_header():
+def display_header() -> None:
     """Display application header."""
     print("\n" + "=" * 70)
     print("  GREEK FREELANCER TAX CALCULATOR")
     print("=" * 70)
 
 
-def display_main_menu():
+def display_main_menu() -> None:
     """Display main menu options."""
     print("\n" + "-" * 70)
     print("MAIN MENU")
@@ -152,13 +381,14 @@ def display_main_menu():
     print("-" * 70)
 
 
-def display_frequency_menu():
+def display_frequency_menu() -> str:
     """
     Display payment frequency menu and get user selection.
     
     Returns:
         str: Selected frequency ('monthly', 'quarterly', or 'annual')
     """
+    logger.debug("Displaying payment frequency menu")
     print("\n" + "-" * 70)
     print("SELECT PAYMENT FREQUENCY")
     print("-" * 70)
@@ -172,289 +402,192 @@ def display_frequency_menu():
             choice = input("Enter your choice (1-3): ").strip()
             
             if choice == '1':
+                logger.info("User selected monthly payment frequency")
                 return 'monthly'
             elif choice == '2':
+                logger.info("User selected quarterly payment frequency")
                 return 'quarterly'
             elif choice == '3':
+                logger.info("User selected annual payment frequency")
                 return 'annual'
             else:
+                logger.debug(f"Invalid frequency choice entered: '{choice}'")
                 print("❌ Invalid choice. Please enter 1, 2, or 3.")
         except (EOFError, KeyboardInterrupt):
+            logger.info("User cancelled frequency selection")
             print("\n\n❌ Input cancelled.")
             sys.exit(0)
 
 
-def format_currency(amount):
-    """
-    Format amount as currency string.
-    
-    Args:
-        amount (float): Amount to format
-    
-    Returns:
-        str: Formatted currency string
-    """
-    return f"€{amount:,.2f}"
-
-
-def display_results(calculation_dict, payment_frequency):
+def display_results(tax_result: 'TaxCalculationResult', payment_frequency: str) -> None:
     """
     Display comprehensive tax calculation results in terminal.
     
-    Shows detailed breakdown including:
-    - Input parameters
-    - Income and expense details
-    - Income tax bracket breakdown
-    - VAT and social security contributions
-    - Payment schedule
-    - Summary with effective tax rates
-    
     Args:
-        calculation_dict (dict): Results from calculate_all_taxes()
-        payment_frequency (str): Payment frequency ('monthly', 'quarterly', 'annual')
+        tax_result: Results from calculate_all_taxes()
+        payment_frequency: Payment frequency ('monthly', 'quarterly', 'annual')
     """
-    # Extract data for readability
-    gross_income = calculation_dict['gross_income']
-    expenses = calculation_dict['deductible_expenses']
-    taxable_income = calculation_dict['taxable_income']
-    income_tax = calculation_dict['income_tax']
-    vat = calculation_dict['vat']
-    social_security = calculation_dict['social_security']
-    total_taxes = calculation_dict['total_taxes']
-    net_income = calculation_dict['net_income']
-    effective_total_rate = calculation_dict['effective_total_rate']
+    payment_schedule = calculate_payment_schedule(tax_result.total_taxes, payment_frequency)
+    writer = ConsoleWriter()
     
-    # Calculate payment schedule
-    payment_schedule = calculate_payment_schedule(total_taxes, payment_frequency)
-    
-    # Display header
     print("\n" + "=" * 70)
     print("TAX CALCULATION RESULTS")
     print("=" * 70)
     print(f"Calculation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 70)
     
-    # Section 1: Input Parameters
-    print("\n" + "─" * 70)
-    print("INPUT PARAMETERS")
-    print("─" * 70)
-    print(f"{'Gross Annual Income:':<35} {format_currency(gross_income):>34}")
-    print(f"{'Deductible Business Expenses:':<35} {format_currency(expenses):>34}")
-    print(f"{'Payment Frequency:':<35} {payment_frequency.capitalize():>34}")
-    
-    # Section 2: Income Breakdown
-    print("\n" + "─" * 70)
-    print("INCOME BREAKDOWN")
-    print("─" * 70)
-    print(f"{'Gross Income:':<35} {format_currency(gross_income):>34}")
-    print(f"{'Less: Deductible Expenses:':<35} {format_currency(expenses):>34}")
-    print(f"{'Taxable Income:':<35} {format_currency(taxable_income):>34}")
-    
-    # Section 3: Income Tax Breakdown by Bracket
-    print("\n" + "─" * 70)
-    print("INCOME TAX BREAKDOWN BY BRACKET")
-    print("─" * 70)
-    
-    if income_tax['bracket_breakdown']:
-        for bracket in income_tax['bracket_breakdown']:
-            bracket_min = format_currency(bracket['bracket_min'])
-            if bracket['bracket_max'] == 'unlimited':
-                bracket_range = f"{bracket_min}+"
-            else:
-                bracket_max = format_currency(bracket['bracket_max'])
-                bracket_range = f"{bracket_min} - {bracket_max}"
-            
-            rate_str = f"{bracket['rate']:.0f}%"
-            taxable_amt = format_currency(bracket['taxable_amount'])
-            tax_amt = format_currency(bracket['tax_amount'])
-            
-            print(f"  {bracket_range:<30} @ {rate_str:>4}")
-            print(f"    {'Taxable amount:':<30} {taxable_amt:>30}")
-            print(f"    {'Tax on this bracket:':<30} {tax_amt:>30}")
-            print()
-    else:
-        print("  No income tax (taxable income is zero)")
-    
-    print(f"{'Total Income Tax:':<35} {format_currency(income_tax['total_tax']):>34}")
-    print(f"{'Effective Income Tax Rate:':<35} {income_tax['effective_rate']:>33.2f}%")
-    
-    # Section 4: Other Taxes and Contributions
-    print("\n" + "─" * 70)
-    print("VAT AND SOCIAL SECURITY")
-    print("─" * 70)
-    print(f"{'VAT (24%):':<35} {format_currency(vat['vat_amount']):>34}")
-    print(f"  {'(To be collected from clients)':<35}")
     print()
-    print(f"{'Social Security (EFKA - 20%):':<35} {format_currency(social_security['total_contribution']):>34}")
-    print(f"  {'Main Insurance (13.33%):':<35} {format_currency(social_security['main_insurance']):>34}")
-    print(f"  {'Additional Contributions (6.67%):':<35} {format_currency(social_security['additional_contributions']):>34}")
-    
-    # Section 5: Payment Schedule
-    print("\n" + "─" * 70)
-    print(f"PAYMENT SCHEDULE ({payment_frequency.upper()})")
-    print("─" * 70)
-    print(f"{'Total Annual Tax (excl. VAT):':<35} {format_currency(payment_schedule['annual_total']):>34}")
-    print(f"{'Number of Payments:':<35} {payment_schedule['number_of_payments']:>34}")
-    print(f"{'Amount per Payment:':<35} {format_currency(payment_schedule['payment_amount']):>34}")
-    
-    if payment_schedule['number_of_payments'] > 1:
-        print(f"\n  Payment Schedule:")
-        for payment in payment_schedule['schedule']:
-            period_label = f"Payment #{payment['period_number']}"
-            print(f"    {period_label:<30} {format_currency(payment['payment_amount']):>34}")
-    
-    # Section 6: Summary
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    print(f"{'Gross Income:':<35} {format_currency(gross_income):>34}")
-    print(f"{'Total Taxes (Income Tax + EFKA):':<35} {format_currency(total_taxes):>34}")
-    print(f"{'Effective Total Tax Rate:':<35} {effective_total_rate:>33.2f}%")
-    print(f"{'Net Income (After Taxes):':<35} {format_currency(net_income):>34}")
-    print("=" * 70)
-    print(f"\nNote: VAT of {format_currency(vat['vat_amount'])} should be collected from clients")
-    print("      and remitted to tax authorities separately.")
-    print("=" * 70)
+    writer.write_lines(format_input_parameters(tax_result, payment_frequency))
+    print()
+    writer.write_lines(format_income_breakdown(tax_result))
+    print()
+    writer.write_lines(format_income_tax_breakdown(tax_result.income_tax))
+    print()
+    writer.write_lines(format_vat_and_social_security(tax_result.vat, tax_result.social_security))
+    print()
+    writer.write_lines(format_payment_schedule(payment_schedule, payment_frequency))
+    print()
+    writer.write_lines(format_summary(tax_result))
 
 
-def save_results_to_file(calculation_dict, payment_frequency):
+def _generate_output_filepath() -> str:
     """
-    Save tax calculation results to a timestamped text file.
+    Generate unique, sanitized file path for output file.
     
-    Creates a file with format: tax_calculation_YYYY-MM-DD_HHMMSS.txt
-    Contains the same information as displayed in terminal for record-keeping.
-    
-    Args:
-        calculation_dict (dict): Results from calculate_all_taxes()
-        payment_frequency (str): Payment frequency ('monthly', 'quarterly', 'annual')
+    Handles timestamp generation, filename sanitization, and ensures uniqueness
+    by appending a counter if file already exists.
     
     Returns:
-        str: Filename if successful, None if error occurred
+        str: Full file path for output file
     """
+    logger.debug("Generating output file path")
+    ensure_output_directory()
+    
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+    filename = sanitize_filename(f"tax_calculation_{timestamp}.txt")
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    logger.debug(f"Generated file path: {os.path.basename(file_path)}")
+    
+    if os.path.exists(file_path):
+        logger.warning(f"File already exists: {os.path.basename(file_path)} (unusual - rapid calculations?)")
+        print(f"\n⚠️  Warning: File '{file_path}' already exists.")
+        print(f"   This is unusual and may indicate rapid successive calculations.")
+        counter = 1
+        while os.path.exists(file_path):
+            filename = sanitize_filename(f"tax_calculation_{timestamp}_{counter}.txt")
+            file_path = os.path.join(OUTPUT_DIR, filename)
+            counter += 1
+        logger.info(f"Using alternative filename: {os.path.basename(file_path)}")
+        print(f"   Saving to '{file_path}' instead.")
+    
+    return file_path
+
+
+def _build_file_content_lines(tax_result: 'TaxCalculationResult', payment_frequency: str) -> List[str]:
+    """
+    Build content lines for tax calculation file.
+    
+    Args:
+        tax_result: Tax calculation results
+        payment_frequency: Payment frequency ('monthly', 'quarterly', 'annual')
+    
+    Returns:
+        List[str]: Content lines for file
+    """
+    logger.debug("Building file content lines")
+    payment_schedule = calculate_payment_schedule(tax_result.total_taxes, payment_frequency)
+    
+    content_lines = []
+    content_lines.append("=" * 70)
+    content_lines.append("GREEK FREELANCER TAX CALCULATION RESULTS")
+    content_lines.append("=" * 70)
+    content_lines.append(f"Calculation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    content_lines.append("=" * 70)
+    content_lines.append("")
+    content_lines.extend(format_input_parameters(tax_result, payment_frequency))
+    content_lines.append("")
+    content_lines.extend(format_income_breakdown(tax_result))
+    content_lines.append("")
+    content_lines.extend(format_income_tax_breakdown(tax_result.income_tax))
+    content_lines.append("")
+    content_lines.extend(format_vat_and_social_security(tax_result.vat, tax_result.social_security))
+    content_lines.append("")
+    content_lines.extend(format_payment_schedule(payment_schedule, payment_frequency))
+    content_lines.append("")
+    content_lines.extend(format_summary(tax_result))
+    
+    logger.debug(f"Built {len(content_lines)} content lines")
+    return content_lines
+
+
+def save_results_to_file(tax_result: 'TaxCalculationResult', payment_frequency: str) -> Optional[str]:
+    """
+    Save tax calculation results to timestamped file.
+    
+    Args:
+        tax_result: Results from calculate_all_taxes()
+        payment_frequency: Payment frequency ('monthly', 'quarterly', 'annual')
+    
+    Returns:
+        str: Full file path if successful, None if error occurred
+    """
+    logger.debug("Starting save_results_to_file")
     try:
-        # Generate timestamp for filename
-        timestamp = datetime.now().strftime('%Y-%m-%d_%H%M%S')
-        filename = f"tax_calculation_{timestamp}.txt"
+        file_path = _generate_output_filepath()
+        content_lines = _build_file_content_lines(tax_result, payment_frequency)
+        file_content = FileWriter.lines_to_content(content_lines)
         
-        # Extract data for readability
-        gross_income = calculation_dict['gross_income']
-        expenses = calculation_dict['deductible_expenses']
-        taxable_income = calculation_dict['taxable_income']
-        income_tax = calculation_dict['income_tax']
-        vat = calculation_dict['vat']
-        social_security = calculation_dict['social_security']
-        total_taxes = calculation_dict['total_taxes']
-        net_income = calculation_dict['net_income']
-        effective_total_rate = calculation_dict['effective_total_rate']
+        content_size = len(file_content.encode('utf-8'))
+        logger.debug(f"File content size: {content_size:,} bytes")
         
-        # Calculate payment schedule
-        payment_schedule = calculate_payment_schedule(total_taxes, payment_frequency)
+        if content_size > MAX_FILE_SIZE:
+            logger.error(f"File size ({content_size:,} bytes) exceeds maximum ({MAX_FILE_SIZE:,} bytes)")
+            print(f"\n⚠️  Warning: Cannot save results to file.")
+            print(f"   Error: Generated file size ({content_size:,} bytes) exceeds maximum allowed size ({MAX_FILE_SIZE:,} bytes).")
+            print(f"   This may indicate a calculation error. Please contact support.")
+            return None
         
-        # Build content
-        content_lines = []
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(file_content)
         
-        # Header
-        content_lines.append("=" * 70)
-        content_lines.append("GREEK FREELANCER TAX CALCULATION RESULTS")
-        content_lines.append("=" * 70)
-        content_lines.append(f"Calculation Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        content_lines.append("=" * 70)
+        logger.debug(f"File written successfully: {os.path.basename(file_path)}")
+        return file_path
         
-        # Section 1: Input Parameters
-        content_lines.append("\n" + "-" * 70)
-        content_lines.append("INPUT PARAMETERS")
-        content_lines.append("-" * 70)
-        content_lines.append(f"{'Gross Annual Income:':<35} {format_currency(gross_income):>34}")
-        content_lines.append(f"{'Deductible Business Expenses:':<35} {format_currency(expenses):>34}")
-        content_lines.append(f"{'Payment Frequency:':<35} {payment_frequency.capitalize():>34}")
-        
-        # Section 2: Income Breakdown
-        content_lines.append("\n" + "-" * 70)
-        content_lines.append("INCOME BREAKDOWN")
-        content_lines.append("-" * 70)
-        content_lines.append(f"{'Gross Income:':<35} {format_currency(gross_income):>34}")
-        content_lines.append(f"{'Less: Deductible Expenses:':<35} {format_currency(expenses):>34}")
-        content_lines.append(f"{'Taxable Income:':<35} {format_currency(taxable_income):>34}")
-        
-        # Section 3: Income Tax Breakdown by Bracket
-        content_lines.append("\n" + "-" * 70)
-        content_lines.append("INCOME TAX BREAKDOWN BY BRACKET")
-        content_lines.append("-" * 70)
-        
-        if income_tax['bracket_breakdown']:
-            for bracket in income_tax['bracket_breakdown']:
-                bracket_min = format_currency(bracket['bracket_min'])
-                if bracket['bracket_max'] == 'unlimited':
-                    bracket_range = f"{bracket_min}+"
-                else:
-                    bracket_max = format_currency(bracket['bracket_max'])
-                    bracket_range = f"{bracket_min} - {bracket_max}"
-                
-                rate_str = f"{bracket['rate']:.0f}%"
-                taxable_amt = format_currency(bracket['taxable_amount'])
-                tax_amt = format_currency(bracket['tax_amount'])
-                
-                content_lines.append(f"  {bracket_range:<30} @ {rate_str:>4}")
-                content_lines.append(f"    {'Taxable amount:':<30} {taxable_amt:>30}")
-                content_lines.append(f"    {'Tax on this bracket:':<30} {tax_amt:>30}")
-                content_lines.append("")
-        else:
-            content_lines.append("  No income tax (taxable income is zero)")
-        
-        content_lines.append(f"{'Total Income Tax:':<35} {format_currency(income_tax['total_tax']):>34}")
-        content_lines.append(f"{'Effective Income Tax Rate:':<35} {income_tax['effective_rate']:>33.2f}%")
-        
-        # Section 4: Other Taxes and Contributions
-        content_lines.append("\n" + "-" * 70)
-        content_lines.append("VAT AND SOCIAL SECURITY")
-        content_lines.append("-" * 70)
-        content_lines.append(f"{'VAT (24%):':<35} {format_currency(vat['vat_amount']):>34}")
-        content_lines.append(f"  {'(To be collected from clients)':<35}")
-        content_lines.append("")
-        content_lines.append(f"{'Social Security (EFKA - 20%):':<35} {format_currency(social_security['total_contribution']):>34}")
-        content_lines.append(f"  {'Main Insurance (13.33%):':<35} {format_currency(social_security['main_insurance']):>34}")
-        content_lines.append(f"  {'Additional Contributions (6.67%):':<35} {format_currency(social_security['additional_contributions']):>34}")
-        
-        # Section 5: Payment Schedule
-        content_lines.append("\n" + "-" * 70)
-        content_lines.append(f"PAYMENT SCHEDULE ({payment_frequency.upper()})")
-        content_lines.append("-" * 70)
-        content_lines.append(f"{'Total Annual Tax (excl. VAT):':<35} {format_currency(payment_schedule['annual_total']):>34}")
-        content_lines.append(f"{'Number of Payments:':<35} {payment_schedule['number_of_payments']:>34}")
-        content_lines.append(f"{'Amount per Payment:':<35} {format_currency(payment_schedule['payment_amount']):>34}")
-        
-        if payment_schedule['number_of_payments'] > 1:
-            content_lines.append(f"\n  Payment Schedule:")
-            for payment in payment_schedule['schedule']:
-                period_label = f"Payment #{payment['period_number']}"
-                content_lines.append(f"    {period_label:<30} {format_currency(payment['payment_amount']):>34}")
-        
-        # Section 6: Summary
-        content_lines.append("\n" + "=" * 70)
-        content_lines.append("SUMMARY")
-        content_lines.append("=" * 70)
-        content_lines.append(f"{'Gross Income:':<35} {format_currency(gross_income):>34}")
-        content_lines.append(f"{'Total Taxes (Income Tax + EFKA):':<35} {format_currency(total_taxes):>34}")
-        content_lines.append(f"{'Effective Total Tax Rate:':<35} {effective_total_rate:>33.2f}%")
-        content_lines.append(f"{'Net Income (After Taxes):':<35} {format_currency(net_income):>34}")
-        content_lines.append("=" * 70)
-        content_lines.append(f"\nNote: VAT of {format_currency(vat['vat_amount'])} should be collected from clients")
-        content_lines.append("      and remitted to tax authorities separately.")
-        content_lines.append("=" * 70)
-        
-        # Write to file
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(content_lines))
-        
-        return filename
-        
-    except IOError as e:
-        print(f"\n⚠️  Warning: Could not save results to file.")
+    except PermissionError as e:
+        logger.error(f"Permission denied while saving file: {str(e)}", exc_info=True)
+        print(f"\n⚠️  Warning: Permission denied when saving results to file.")
         print(f"   Error: {str(e)}")
+        print(f"   Please check that you have write permissions for the '{OUTPUT_DIR}' directory.")
+        return None
+    except OSError as e:
+        logger.error(f"OS error while saving file: {str(e)}", exc_info=True)
+        print(f"\n⚠️  Warning: System error occurred while saving results to file.")
+        print(f"   Error: {str(e)}")
+        print(f"   This may be due to insufficient disk space or system restrictions.")
+        return None
+    except IOError as e:
+        logger.error(f"I/O error while saving file: {str(e)}", exc_info=True)
+        print(f"\n⚠️  Warning: Could not save results to file due to I/O error.")
+        print(f"   Error: {str(e)}")
+        print(f"   Please ensure the '{OUTPUT_DIR}' directory is accessible.")
+        return None
+    except ValueError as e:
+        logger.error(f"Filename sanitization error: {str(e)}", exc_info=True)
+        print(f"\n⚠️  Warning: Invalid filename detected.")
+        print(f"   Error: {str(e)}")
+        print(f"   This is an internal error. Please contact support.")
+        return None
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        logger.error(f"Unicode encoding error while saving file: {str(e)}", exc_info=True)
+        print(f"\n⚠️  Warning: Character encoding error while saving file.")
+        print(f"   Error: {str(e)}")
+        print(f"   Please ensure your calculation doesn't contain unsupported characters.")
         return None
     except Exception as e:
+        logger.error(f"Unexpected error while saving file: {str(e)}", exc_info=True)
         print(f"\n⚠️  Warning: An unexpected error occurred while saving file.")
         print(f"   Error: {str(e)}")
+        print(f"   Please try again or contact support if the problem persists.")
         return None
 
 
@@ -462,54 +595,59 @@ def save_results_to_file(calculation_dict, payment_frequency):
 # USER INPUT COLLECTION FUNCTIONS
 # ============================================================================
 
-def get_gross_income():
+def get_gross_income() -> Decimal:
     """
     Prompt user for gross annual income with validation.
     
     Returns:
-        float: Validated gross annual income
+        Decimal: Validated gross annual income (>= 0)
     """
+    logger.debug("Collecting gross income from user")
     print("\n" + "-" * 70)
     print("GROSS ANNUAL INCOME")
     print("-" * 70)
     print("Enter your total gross annual income (excluding VAT).")
     print("Example: 50000 for €50,000")
+    print("Enter 0 if you have no income to calculate.")
     print("-" * 70)
     
     while True:
         try:
             value_str = input("Gross annual income (€): ").strip()
             
-            # Handle empty input
             if not value_str:
+                logger.debug("User entered empty value for gross income")
                 print("❌ Please enter a value.")
                 continue
             
-            # Validate positive number
-            gross_income = validate_positive_number(value_str, "Gross income")
+            gross_income = validate_non_negative_number(value_str, "Gross income")
             
-            # Validate realistic amount
-            validate_realistic_amount(gross_income, "Gross income")
+            if gross_income > 0:
+                validate_realistic_amount(gross_income, "Gross income")
             
+            logger.info("Gross income collected successfully")
+            logger.debug(f"Gross income value accepted: {gross_income}")
             return gross_income
             
         except ValueError as e:
             print(f"❌ {str(e)}")
         except (EOFError, KeyboardInterrupt):
+            logger.info("User cancelled gross income input")
             print("\n\n❌ Input cancelled.")
             sys.exit(0)
 
 
-def get_deductible_expenses(gross_income):
+def get_deductible_expenses(gross_income: Decimal) -> Decimal:
     """
     Prompt user for deductible business expenses with validation.
     
     Args:
-        gross_income (float): Gross income for validation
+        gross_income: Gross income for validation
     
     Returns:
-        float: Validated deductible expenses
+        Decimal: Validated deductible expenses
     """
+    logger.debug("Collecting deductible expenses from user")
     print("\n" + "-" * 70)
     print("DEDUCTIBLE BUSINESS EXPENSES")
     print("-" * 70)
@@ -523,41 +661,40 @@ def get_deductible_expenses(gross_income):
         try:
             value_str = input("Deductible expenses (€): ").strip()
             
-            # Handle empty input (default to 0)
             if not value_str:
+                logger.debug("User entered empty value for expenses")
                 print("❌ Please enter a value (or 0 for no expenses).")
                 continue
             
-            # Validate non-negative number
             expenses = validate_non_negative_number(value_str, "Expenses")
-            
-            # Validate against gross income
             validate_expenses_against_income(expenses, gross_income)
-            
-            # Validate realistic amount
             validate_realistic_amount(expenses, "Expenses")
             
+            logger.info("Deductible expenses collected successfully")
+            logger.debug(f"Expenses value accepted: {expenses}")
             return expenses
             
         except ValueError as e:
             print(f"❌ {str(e)}")
         except (EOFError, KeyboardInterrupt):
+            logger.info("User cancelled expenses input")
             print("\n\n❌ Input cancelled.")
             sys.exit(0)
 
 
-def confirm_inputs(gross_income, expenses, frequency):
+def confirm_inputs(gross_income: Decimal, expenses: Decimal, frequency: str) -> bool:
     """
     Display input summary and ask for confirmation.
     
     Args:
-        gross_income (float): Gross annual income
-        expenses (float): Deductible expenses
-        frequency (str): Payment frequency
+        gross_income: Gross annual income
+        expenses: Deductible expenses
+        frequency: Payment frequency
     
     Returns:
         bool: True if user confirms, False otherwise
     """
+    logger.debug("Requesting user confirmation of inputs")
     print("\n" + "=" * 70)
     print("CONFIRM YOUR INPUTS")
     print("=" * 70)
@@ -571,12 +708,16 @@ def confirm_inputs(gross_income, expenses, frequency):
             response = input("\nProceed with calculation? (yes/no): ").strip().lower()
             
             if response in ['yes', 'y']:
+                logger.info("User confirmed inputs - proceeding with calculation")
                 return True
             elif response in ['no', 'n']:
+                logger.info("User declined to proceed with calculation")
                 return False
             else:
+                logger.debug(f"Invalid confirmation response: '{response}'")
                 print("❌ Please enter 'yes' or 'no'.")
         except (EOFError, KeyboardInterrupt):
+            logger.info("User cancelled input confirmation")
             print("\n\n❌ Input cancelled.")
             return False
 
@@ -585,55 +726,65 @@ def confirm_inputs(gross_income, expenses, frequency):
 # CALCULATION EXECUTION
 # ============================================================================
 
-def perform_calculation(gross_income, expenses, frequency):
+def perform_calculation(gross_income: Decimal, expenses: Decimal, frequency: str) -> Optional[Dict[str, Union[Decimal, Dict]]]:
     """
     Execute tax calculation, display results, and save to file.
     
-    This function orchestrates the complete calculation workflow:
-    1. Calls calculate_all_taxes() to compute all tax components
-    2. Displays formatted results to terminal
-    3. Saves results to timestamped file for record-keeping
-    
     Args:
-        gross_income (float): Gross annual income
-        expenses (float): Deductible expenses
-        frequency (str): Payment frequency
+        gross_income: Gross annual income
+        expenses: Deductible expenses
+        frequency: Payment frequency
     
-    Example usage:
-        # Calculate taxes for €35,000 income with €5,000 expenses
-        perform_calculation(35000, 5000, 'quarterly')
-        
-        # Results include:
-        # - Full income tax bracket breakdown
-        # - EFKA social security contributions
-        # - VAT calculations
-        # - Payment schedule (4 quarterly payments)
-        # - Net income after taxes
+    Returns:
+        Optional[Dict]: Tax calculation results, or None if error occurred
     """
     try:
+        logger.info("Starting tax calculation")
+        logger.debug(f"Calculation parameters: frequency={frequency}")
+        
         print("\n" + "=" * 70)
         print("CALCULATING...")
         print("=" * 70)
         
-        # Calculate all taxes using the tax_calculator module
-        # This returns a comprehensive dictionary with all tax components
-        results = calculate_all_taxes(gross_income, expenses)
+        if gross_income == 0:
+            logger.info("Zero income calculation requested")
+            print("\n" + "ℹ️  " + "=" * 68)
+            print("ℹ️  ZERO INCOME CALCULATION")
+            print("ℹ️  " + "=" * 68)
+            print("ℹ️  You have entered zero gross income.")
+            print("ℹ️  All tax calculations will be zero.")
+            print("ℹ️  This is useful for planning purposes or understanding tax structure.")
+            print("ℹ️  " + "=" * 68 + "\n")
         
-        # Display comprehensive results to terminal
-        # Shows bracket-by-bracket breakdown, payment schedule, and summary
+        results = calculate_all_taxes(gross_income, expenses)
         display_results(results, frequency)
         
-        # Save results to file for record-keeping
-        # Creates file: tax_calculation_YYYY-MM-DD_HHMMSS.txt
+        logger.info("Saving calculation results to file")
         filename = save_results_to_file(results, frequency)
         
         if filename:
+            # Sanitize file path for logging (show only filename, not full path)
+            sanitized_path = os.path.basename(filename)
+            logger.info(f"Results saved successfully to {sanitized_path}")
             print(f"\n✅ Results saved to: {filename}")
+        else:
+            logger.warning("Failed to save results to file")
         
         return results
         
+    except (TypeError, AttributeError) as e:
+        logger.error(f"Data type error during calculation: {str(e)}", exc_info=True)
+        print(f"\n❌ A data error occurred during calculation: {str(e)}")
+        print("This may indicate corrupted data. Please try again.")
+        return None
+    except (KeyError, IndexError) as e:
+        logger.error(f"Data structure error during calculation: {str(e)}", exc_info=True)
+        print(f"\n❌ A data structure error occurred: {str(e)}")
+        print("This is an internal error. Please contact support.")
+        return None
     except Exception as e:
-        print(f"\n❌ An error occurred during calculation: {str(e)}")
+        logger.error(f"Unexpected error during calculation: {str(e)}", exc_info=True)
+        print(f"\n❌ An unexpected error occurred during calculation: {str(e)}")
         print("Please try again or contact support if the problem persists.")
         return None
 
@@ -642,40 +793,14 @@ def perform_calculation(gross_income, expenses, frequency):
 # MAIN APPLICATION LOOP
 # ============================================================================
 
-def run_calculator():
+def run_calculator() -> None:
     """
     Main application loop for the tax calculator.
-    Handles menu navigation and calculation workflow.
     
-    The application follows this flow:
-    1. Display main menu
-    2. User selects "New Calculation" or "Exit"
-    3. For new calculation:
-       a. Collect gross income input (with validation)
-       b. Collect deductible expenses (with validation)
-       c. Select payment frequency (monthly/quarterly/annual)
-       d. Confirm inputs
-       e. Calculate and display results
-       f. Save to timestamped file
-    4. Loop back to main menu for additional calculations
-    
-    Example workflow:
-        → Main Menu
-        → Choose "New Calculation"
-        → Enter gross income: €35,000
-        → Enter expenses: €5,000
-        → Choose quarterly payments
-        → Confirm inputs
-        → View results showing:
-          * Taxable income: €30,000
-          * Income tax: €5,900 (bracket breakdown)
-          * EFKA: €7,000
-          * Total taxes: €12,900
-          * Net income: €22,100
-          * Quarterly payment: €3,225
-        → Results saved to file
-        → Return to main menu
+    Handles menu navigation and calculation workflow including input collection,
+    validation, calculation, display, and file saving.
     """
+    logger.info("Starting calculator main loop")
     display_header()
     
     while True:
@@ -684,48 +809,382 @@ def run_calculator():
             choice = input("Enter your choice (1-2): ").strip()
             
             if choice == '1':
-                # New Calculation workflow
+                logger.info("User selected: New Calculation")
                 print("\n" + "=" * 70)
                 print("NEW TAX CALCULATION")
                 print("=" * 70)
                 
-                # Step 1: Collect gross income (validated for positive number)
                 gross_income = get_gross_income()
-                
-                # Step 2: Collect deductible expenses (validated against income)
                 expenses = get_deductible_expenses(gross_income)
-                
-                # Step 3: Select payment frequency (monthly, quarterly, annual)
                 frequency = display_frequency_menu()
                 
-                # Step 4: Confirm inputs before proceeding
                 if confirm_inputs(gross_income, expenses, frequency):
-                    # Step 5: Perform calculation and display/save results
                     perform_calculation(gross_income, expenses, frequency)
                 else:
+                    logger.info("Calculation cancelled by user")
                     print("\n❌ Calculation cancelled. Returning to main menu.")
                     continue
                 
             elif choice == '2':
-                # Exit application gracefully
+                logger.info("User selected: Exit")
                 print("\n" + "=" * 70)
                 print("Thank you for using the Greek Freelancer Tax Calculator!")
                 print("=" * 70 + "\n")
                 sys.exit(0)
                 
             else:
+                logger.debug(f"Invalid menu choice entered: '{choice}'")
                 print("❌ Invalid choice. Please enter 1 or 2.")
                 
         except (EOFError, KeyboardInterrupt):
-            # Handle Ctrl+C or EOF gracefully
+            logger.info("User interrupted application")
             print("\n\n" + "=" * 70)
             print("Application interrupted. Exiting gracefully...")
             print("=" * 70 + "\n")
             sys.exit(0)
         except Exception as e:
-            # Catch any unexpected errors and return to menu
+            logger.error(f"Unexpected error in main loop: {str(e)}", exc_info=True)
             print(f"\n❌ An unexpected error occurred: {str(e)}")
             print("Returning to main menu...")
+
+
+# ============================================================================
+# COMMAND LINE ARGUMENT PARSING
+# ============================================================================
+
+def parse_arguments() -> argparse.Namespace:
+    """
+    Parse command line arguments for both calculation and logging configuration.
+    
+    Returns:
+        argparse.Namespace: Parsed command line arguments
+    """
+    parser = argparse.ArgumentParser(
+        description='Greek Freelancer Tax Calculator - Calculate taxes, VAT, and social security contributions',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Interactive mode (default)
+  python main.py
+  
+  # Non-interactive mode
+  python main.py --income 50000 --expenses 10000 --frequency monthly
+  
+  # Hybrid mode (prompts only for missing values)
+  python main.py --income 50000
+  
+  # Custom output file
+  python main.py --income 50000 --expenses 10000 --frequency quarterly --output my_taxes.txt
+  
+  # Quiet mode (only show results, no status messages)
+  python main.py --income 50000 --expenses 10000 --frequency annual --quiet
+  
+  # Strict non-interactive (fail if required args missing)
+  python main.py --income 50000 --expenses 10000 --frequency monthly --no-interactive
+  
+  # Show version
+  python main.py --version
+        """
+    )
+    
+    # Version flag
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='Greek Freelancer Tax Calculator v1.0.0'
+    )
+    
+    # Calculation arguments group
+    calc_group = parser.add_argument_group('Calculation Options')
+    calc_group.add_argument(
+        '--income',
+        type=str,
+        metavar='AMOUNT',
+        help='Gross annual income in euros (e.g., 50000 for €50,000)'
+    )
+    calc_group.add_argument(
+        '--expenses',
+        type=str,
+        metavar='AMOUNT',
+        help='Deductible business expenses in euros (e.g., 10000 for €10,000)'
+    )
+    calc_group.add_argument(
+        '--frequency',
+        type=str,
+        choices=['monthly', 'quarterly', 'annual'],
+        metavar='FREQUENCY',
+        help='Payment frequency: monthly, quarterly, or annual'
+    )
+    calc_group.add_argument(
+        '--output',
+        type=str,
+        metavar='PATH',
+        help='Custom output file path (if not specified, auto-generates timestamped file)'
+    )
+    calc_group.add_argument(
+        '--no-interactive',
+        action='store_true',
+        help='Non-interactive mode - fail if required arguments are missing (requires --income, --expenses, --frequency)'
+    )
+    
+    # Logging arguments group
+    log_group = parser.add_argument_group('Logging Options')
+    log_group.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Enable verbose logging (DEBUG level to console)'
+    )
+    log_group.add_argument(
+        '-q', '--quiet',
+        action='store_true',
+        help='Quiet mode - show only warnings and errors to console'
+    )
+    log_group.add_argument(
+        '--log-file',
+        type=str,
+        metavar='PATH',
+        help='Custom log file path (default: tax_calculator_debug.log)'
+    )
+    log_group.add_argument(
+        '--no-log-file',
+        action='store_true',
+        help='Disable file logging (useful for privacy-conscious users)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate mutually exclusive options
+    if args.verbose and args.quiet:
+        parser.error("--verbose and --quiet are mutually exclusive")
+    
+    # Validate --no-interactive mode requirements
+    if args.no_interactive:
+        missing_args = []
+        if args.income is None:
+            missing_args.append('--income')
+        if args.expenses is None:
+            missing_args.append('--expenses')
+        if args.frequency is None:
+            missing_args.append('--frequency')
+        
+        if missing_args:
+            parser.error(
+                f"--no-interactive mode requires all of: --income, --expenses, --frequency\n"
+                f"Missing: {', '.join(missing_args)}"
+            )
+    
+    return args
+
+
+def validate_cli_arguments(args: argparse.Namespace) -> Optional[Tuple[Decimal, Decimal, str]]:
+    """
+    Validate CLI arguments and return validated values.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        Optional[tuple]: (income, expenses, frequency) if all provided and valid, None otherwise
+        
+    Raises:
+        SystemExit: If validation fails with exit code 1
+    """
+    logger.debug("Validating CLI arguments")
+    
+    # If no calculation args provided, return None (interactive mode)
+    if args.income is None and args.expenses is None and args.frequency is None:
+        logger.debug("No calculation arguments provided - using interactive mode")
+        return None
+    
+    validated_income = None
+    validated_expenses = None
+    validated_frequency = None
+    
+    # Validate income if provided
+    if args.income is not None:
+        try:
+            validated_income = validate_non_negative_number(args.income, "Income")
+            if validated_income > 0:
+                validate_realistic_amount(validated_income, "Income")
+            logger.debug(f"CLI income validated: {validated_income}")
+        except ValueError as e:
+            logger.error(f"Invalid --income argument: {e}")
+            print(f"❌ Error: --income must be a positive number, got: {args.income}")
+            print(f"   {str(e)}")
+            sys.exit(1)
+    
+    # Validate expenses if provided
+    if args.expenses is not None:
+        try:
+            validated_expenses = validate_non_negative_number(args.expenses, "Expenses")
+            validate_realistic_amount(validated_expenses, "Expenses")
+            logger.debug(f"CLI expenses validated: {validated_expenses}")
+        except ValueError as e:
+            logger.error(f"Invalid --expenses argument: {e}")
+            print(f"❌ Error: --expenses must be a non-negative number, got: {args.expenses}")
+            print(f"   {str(e)}")
+            sys.exit(1)
+    
+    # Validate expenses against income if both provided
+    if validated_income is not None and validated_expenses is not None:
+        try:
+            validate_expenses_against_income(validated_expenses, validated_income)
+        except ValueError as e:
+            logger.error(f"Expenses validation failed: {e}")
+            print(f"❌ Error: {str(e)}")
+            sys.exit(1)
+    
+    # Frequency is already validated by argparse choices
+    if args.frequency is not None:
+        validated_frequency = args.frequency
+        logger.debug(f"CLI frequency validated: {validated_frequency}")
+    
+    # Return validated values if all are provided, None if partial
+    if validated_income is not None and validated_expenses is not None and validated_frequency is not None:
+        logger.info("All CLI calculation arguments validated successfully")
+        return (validated_income, validated_expenses, validated_frequency)
+    else:
+        logger.debug("Partial CLI arguments provided - will use hybrid mode")
+        return None
+
+
+def run_calculator_with_args(args: argparse.Namespace) -> None:
+    """
+    Run calculator with command-line arguments (non-interactive or hybrid mode).
+    
+    Args:
+        args: Parsed command line arguments
+    """
+    logger.info("Running calculator with CLI arguments")
+    
+    # Validate provided arguments
+    validated = validate_cli_arguments(args)
+    
+    # Initialize values
+    gross_income = None
+    expenses = None
+    frequency = None
+    
+    if validated:
+        # Non-interactive mode - all args provided
+        logger.info("Non-interactive mode: all required arguments provided")
+        gross_income, expenses, frequency = validated
+        
+        # Display inputs (not a prompt, just showing what was provided)
+        if not args.quiet:
+            print("\n" + "=" * 70)
+            print("CALCULATION PARAMETERS (from command line)")
+            print("=" * 70)
+            print(f"Gross Annual Income:       {format_currency(gross_income)}")
+            print(f"Deductible Expenses:       {format_currency(expenses)}")
+            print(f"Payment Frequency:         {frequency.capitalize()}")
+            print("=" * 70)
+    else:
+        # Hybrid mode - prompt for missing values
+        logger.info("Hybrid mode: prompting for missing arguments")
+        
+        if not args.quiet:
+            print("\n" + "=" * 70)
+            print("HYBRID MODE: Some arguments provided via command line")
+            print("You will be prompted for any missing required values")
+            print("=" * 70)
+        
+        # Get income (from CLI or prompt)
+        if args.income is not None:
+            try:
+                gross_income = validate_non_negative_number(args.income, "Income")
+                if gross_income > 0:
+                    validate_realistic_amount(gross_income, "Income")
+                logger.info(f"Using income from CLI: {gross_income}")
+                if not args.quiet:
+                    print(f"\n✓ Using income from command line: {format_currency(gross_income)}")
+            except ValueError as e:
+                logger.error(f"Invalid --income argument: {e}")
+                print(f"❌ Error: Invalid --income value: {args.income}")
+                print(f"   {str(e)}")
+                sys.exit(1)
+        else:
+            gross_income = get_gross_income()
+        
+        # Get expenses (from CLI or prompt)
+        if args.expenses is not None:
+            try:
+                expenses = validate_non_negative_number(args.expenses, "Expenses")
+                validate_realistic_amount(expenses, "Expenses")
+                validate_expenses_against_income(expenses, gross_income)
+                logger.info(f"Using expenses from CLI: {expenses}")
+                if not args.quiet:
+                    print(f"✓ Using expenses from command line: {format_currency(expenses)}")
+            except ValueError as e:
+                logger.error(f"Invalid --expenses argument: {e}")
+                print(f"❌ Error: Invalid --expenses value: {args.expenses}")
+                print(f"   {str(e)}")
+                sys.exit(1)
+        else:
+            expenses = get_deductible_expenses(gross_income)
+        
+        # Get frequency (from CLI or prompt)
+        if args.frequency is not None:
+            frequency = args.frequency
+            logger.info(f"Using frequency from CLI: {frequency}")
+            if not args.quiet:
+                print(f"✓ Using payment frequency from command line: {frequency.capitalize()}")
+        else:
+            frequency = display_frequency_menu()
+        
+        # Confirm inputs in hybrid mode unless --no-interactive
+        if not args.no_interactive:
+            if not confirm_inputs(gross_income, expenses, frequency):
+                logger.info("User cancelled calculation in hybrid mode")
+                print("\n❌ Calculation cancelled.")
+                sys.exit(0)
+    
+    # Perform calculation
+    logger.info("Executing tax calculation")
+    
+    # Handle custom output file if specified
+    custom_output = args.output if hasattr(args, 'output') else None
+    
+    try:
+        results = calculate_all_taxes(gross_income, expenses)
+        display_results(results, frequency)
+        
+        # Save to file
+        if custom_output:
+            logger.info(f"Saving results to custom output file: {custom_output}")
+            try:
+                # Sanitize custom filename (basename only)
+                custom_filename = os.path.basename(custom_output)
+                sanitized = sanitize_filename(custom_filename)
+                ensure_output_directory()
+                custom_path = os.path.join(OUTPUT_DIR, sanitized)
+                
+                content_lines = _build_file_content_lines(results, frequency)
+                with open(custom_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(content_lines))
+                
+                logger.info(f"Results saved to custom file: {sanitized}")
+                print(f"\n✅ Results saved to: {custom_path}")
+            except Exception as e:
+                logger.error(f"Failed to save to custom output file: {e}")
+                print(f"\n⚠️  Warning: Could not save to custom output file: {str(e)}")
+                print(f"   Saving to default location instead...")
+                filename = save_results_to_file(results, frequency)
+                if filename:
+                    print(f"✅ Results saved to: {filename}")
+        else:
+            filename = save_results_to_file(results, frequency)
+            if filename:
+                logger.info(f"Results saved to file: {os.path.basename(filename)}")
+                print(f"\n✅ Results saved to: {filename}")
+        
+        logger.info("Tax calculation completed successfully")
+        sys.exit(0)
+        
+    except Exception as e:
+        logger.error(f"Calculation failed: {str(e)}", exc_info=True)
+        print(f"\n❌ Calculation failed: {str(e)}")
+        sys.exit(1)
 
 
 # ============================================================================
@@ -733,41 +1192,44 @@ def run_calculator():
 # ============================================================================
 
 if __name__ == "__main__":
-    """
-    Entry point for the Greek Freelancer Tax Calculator application.
+    # Parse command line arguments
+    args = parse_arguments()
     
-    This block ensures the calculator only runs when executed directly
-    (not when imported as a module).
+    # Setup logging based on CLI arguments
+    setup_logging(
+        verbose=args.verbose,
+        quiet=args.quiet,
+        log_file=args.log_file,
+        no_log_file=args.no_log_file
+    )
     
-    USAGE EXAMPLES:
+    logger.info("Greek Freelancer Tax Calculator starting")
+    logger.debug(f"Logging configuration: verbose={args.verbose}, quiet={args.quiet}, "
+                f"log_file={args.log_file}, no_log_file={args.no_log_file}")
     
-    Example 1 - Run interactively:
-        $ python main.py
-        → Follow the prompts to calculate taxes
+    # Detect mode: interactive vs non-interactive/hybrid
+    has_calc_args = (args.income is not None or 
+                     args.expenses is not None or 
+                     args.frequency is not None or
+                     args.no_interactive)
     
-    Example 2 - Using from Python code:
-        from tax_calculator import calculate_all_taxes
-        
-        # Calculate taxes programmatically
-        result = calculate_all_taxes(35000, 5000)
-        print(f"Total taxes: €{result['total_taxes']:,.2f}")
-        print(f"Net income: €{result['net_income']:,.2f}")
-    
-    Example 3 - Quick test calculation:
-        from tax_calculator import calculate_all_taxes, calculate_payment_schedule
-        
-        # Get tax breakdown
-        taxes = calculate_all_taxes(60000, 10000)
-        
-        # Get payment schedule
-        schedule = calculate_payment_schedule(taxes['total_taxes'], 'monthly')
-        print(f"Monthly payment: €{schedule['payment_amount']:,.2f}")
-    """
     try:
-        # Run the interactive calculator application
-        run_calculator()
+        if has_calc_args:
+            # Non-interactive or hybrid mode
+            logger.info("Running in CLI argument mode (non-interactive or hybrid)")
+            run_calculator_with_args(args)
+        else:
+            # Pure interactive mode (original behavior)
+            logger.info("Running in interactive mode (no CLI arguments provided)")
+            run_calculator()
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
+        print("\n\n" + "=" * 70)
+        print("Application interrupted. Exiting gracefully...")
+        print("=" * 70 + "\n")
+        sys.exit(0)
     except Exception as e:
-        # Handle any fatal errors that escape the main loop
+        logger.critical(f"Fatal error in application: {str(e)}", exc_info=True)
         print(f"\n❌ Fatal error: {str(e)}")
         print("Application will now exit.")
         sys.exit(1)
